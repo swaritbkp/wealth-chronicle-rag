@@ -1,0 +1,82 @@
+# .github/workflows/rag_eval.yml
+name: RAG Evaluation & Regression Gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'ingest.py'
+      - 'config/**'
+      - 'tests/**'
+      - 'requirements.txt'
+
+concurrency:
+  group: rag-eval-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate-rag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ragas datasets
+
+      - name: Validate Golden Eval Set Schema
+        run: |
+          python -c "
+          import json
+          with open('tests/golden_eval_set.json') as f:
+              data = json.load(f)
+          assert len(data) == 50, f'Expected 50 items, got {len(data)}'
+          required = {'id','category','question','ground_truth','source_edition_dates','source_pages'}
+          for item in data:
+              assert required.issubset(item.keys()), f'Missing keys in {item[\"id\"]}'
+          print('✓ Golden eval set schema validated (50 items)')
+          "
+
+      - name: Run RAGAS Faithfulness Evaluation Suite
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_READ_KEY: ${{ secrets.QDRANT_READ_KEY }}
+        run: |
+          pytest tests/test_ragas_eval.py -v --tb=short --no-header \
+            | tee eval_results.txt
+
+      - name: Upload Evaluation Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-eval-results
+          path: eval_results.txt
+          retention-days: 30
+
+      - name: Comment PR with Results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('eval_results.txt', 'utf8');
+            const body = `## 📊 RAGAS Evaluation Results\n\`\`\`\n${results}\n\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });

@@ -1,0 +1,53 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets
+.streamlit/secrets.toml
+.env
+.env.local
+
+# Data directory (PDFs)
+data/
+*.pdf
+
+# Model caches
+/tmp/models/
+models/
+.cache/
+
+# Evaluation output
+eval_results.txt
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Distribution
+dist/
+build/
+*.egg-info/
