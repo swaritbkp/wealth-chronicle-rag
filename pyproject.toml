@@ -29,7 +29,7 @@ disable_error_code = ["valid-type", "no-redef", "arg-type", "attr-defined"]
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", "scripts/*", "wealth_chronicle_rag/*", "*/__pycache__/*", "*/.venv/*"]
+omit = ["tests/*", "scripts/*", "*/__pycache__/*", "*/.venv/*"]
 
 [tool.coverage.report]
 exclude_lines = [
