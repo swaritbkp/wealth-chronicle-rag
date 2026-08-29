@@ -49,14 +49,23 @@ jobs:
           print('✓ Golden eval set schema validated (50 items)')
           "
 
-      - name: Run RAGAS Faithfulness Evaluation Suite
+      - name: Run Full Test Suite (Expanded Harness)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_READ_KEY: ${{ secrets.QDRANT_READ_KEY }}
+        run: |
+          pytest tests/ -v --tb=short --no-header \
+            | tee eval_results.txt
+
+      - name: Run RAGAS Faithfulness Evaluation Suite (Golden Set)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
           QDRANT_READ_KEY: ${{ secrets.QDRANT_READ_KEY }}
         run: |
           pytest tests/test_ragas_eval.py -v --tb=short --no-header \
-            | tee eval_results.txt
+            | tee -a eval_results.txt
 
       - name: Upload Evaluation Results
         if: always()

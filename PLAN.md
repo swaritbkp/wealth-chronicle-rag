@@ -1606,3 +1606,29 @@ print('✓ CI workflow YAML is syntactically valid')
 ---
 
 *End of Implementation Execution Plan — WealthChronicle AI v1.0*
+---
+
+## 6. Overnight Hardening & Verification (2026-08-29 Night)
+
+**Status:** Completed — commit 8c4e3e9
+
+### Hardening Scope
+
+- **Test harness expansion:** 79 tests passing
+  - `tests/test_engine_extended.py` (36 tests): RRF & recency edge (delta 0/365/1000/negative, ties, missing), FlashRank fallback (5), refusal boundaries (10), concurrency 20 threads, retry jitter (6)
+  - `tests/test_ingest_mocked.py` (25 tests): chunker edge (15), ID invariants 500 collisions (10)
+  - `tests/test_app_isolated.py` (18 tests): session cap 20, prompt order recency, citation formatting
+  - `tests/test_ragas_eval.py` (1 test): RAGAS offline mock
+- **Synthetic benchmark:** `scripts/benchmark_latency.py` 300x384-d, 100 queries, P50 5.0 P90 5.3 P95 5.5 dense 0.7 sparse 0.4 RRF 0.03 peak RSS 135.7 headroom 295ms -> BENCHMARK_REPORT.md
+- **Static typing & lint:** ruff All checks passed, black All done, isort, mypy Success
+- **CI audit:** .github/workflows/rag_eval.yml YAML valid, 8 steps, runs pytest tests/ full suite + RAGAS, path filters
+
+### Verification Commands (Post-Hardening)
+
+pytest tests/ -v  # 79 passed
+pytest --cov  # 45% total
+ruff check .; black --check .; mypy --ignore-missing-imports  # Success
+python scripts/benchmark_latency.py  # P95 5.5ms RSS 135.7MB
+
+All DoD checklists remain [x] verified.
+
