@@ -24,8 +24,7 @@ import yaml
 
 # Optional imports handled gracefully
 try:
-    from qdrant_client.http.exceptions import (ResponseHandlingException,
-                                               UnexpectedResponse)
+    from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 except ImportError:
 
     class UnexpectedResponse(Exception):
@@ -77,11 +76,7 @@ def load_and_validate_prompts(config_path: str = "config/prompts.yaml") -> dict:
     formatter = string.Formatter()
     for template_key, required_vars in _REQUIRED_TEMPLATE_VARS.items():
         template = config[template_key]
-        found_vars = {
-            field_name
-            for _, field_name, _, _ in formatter.parse(template)
-            if field_name is not None
-        }
+        found_vars = {field_name for _, field_name, _, _ in formatter.parse(template) if field_name is not None}
         missing = required_vars - found_vars
         if missing:
             raise ValueError(f"Template '{template_key}' missing variables: {missing}")
@@ -113,14 +108,8 @@ class BM25Index:
     def search(self, query: str, limit: int = 12) -> list[tuple[str, float]]:
         """Return (point_id, bm25_score) tuples, descending by score."""
         query_tokens = bm25s.tokenize([query], stopwords="en")
-        results, scores = self.model.retrieve(
-            query_tokens, k=limit, corpus=self.corpus_ids
-        )
-        return [
-            (str(doc_id), float(score))
-            for doc_id, score in zip(results[0], scores[0])
-            if score > 0
-        ]
+        results, scores = self.model.retrieve(query_tokens, k=limit, corpus=self.corpus_ids)
+        return [(str(doc_id), float(score)) for doc_id, score in zip(results[0], scores[0]) if score > 0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,16 +144,12 @@ def reciprocal_rank_fusion(
         reference_date = date.today()
 
     # Build rank maps
-    dense_rank_map: dict[str, int] = {
-        r.point_id: r.dense_rank for r in dense_results if r.dense_rank is not None
-    }
+    dense_rank_map: dict[str, int] = {r.point_id: r.dense_rank for r in dense_results if r.dense_rank is not None}
     # Also handle fallback where dense_rank may be missing but order implies rank
     if not dense_rank_map and dense_results:
         dense_rank_map = {r.point_id: idx + 1 for idx, r in enumerate(dense_results)}
 
-    sparse_rank_map: dict[str, int] = {
-        pid: rank + 1 for rank, (pid, _) in enumerate(sparse_results)
-    }
+    sparse_rank_map: dict[str, int] = {pid: rank + 1 for rank, (pid, _) in enumerate(sparse_results)}
 
     # Union of all candidate IDs
     all_ids: set[str] = set(dense_rank_map.keys()) | set(sparse_rank_map.keys())
@@ -245,11 +230,7 @@ def rerank_candidates(
     # Normal path: use FlashRank
     from flashrank import RerankRequest
 
-    passages = [
-        {"id": c["point_id"], "text": payload_map[c["point_id"]].text}
-        for c in candidates
-        if c["point_id"] in payload_map
-    ]
+    passages = [{"id": c["point_id"], "text": payload_map[c["point_id"]].text} for c in candidates if c["point_id"] in payload_map]
 
     if not passages:
         return []
@@ -361,11 +342,7 @@ def safe_generate(model, prompt: str, rate_limiter: GeminiRateLimiter) -> str:
             # Check for ResourceExhausted (429)
             is_429 = False
             # google.api_core.exceptions.ResourceExhausted
-            if (
-                "ResourceExhausted" in type(e).__name__
-                or "429" in str(e)
-                or "Quota" in str(e)
-            ):
+            if "ResourceExhausted" in type(e).__name__ or "429" in str(e) or "Quota" in str(e):
                 is_429 = True
             try:
                 import google.api_core.exceptions
@@ -377,17 +354,13 @@ def safe_generate(model, prompt: str, rate_limiter: GeminiRateLimiter) -> str:
 
             if is_429 and attempt < 2:
                 wait = 2**attempt * 5  # 5s, 10s, 20s
-                logging.warning(
-                    f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)"
-                )
+                logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
                 time.sleep(wait)
                 continue
             elif is_429:
                 # After 3 failures
                 wait = 2**attempt * 5
-                logging.warning(
-                    f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)"
-                )
+                logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
                 time.sleep(wait)
                 return "The service is temporarily busy. Please try again in a few moments."
             else:
@@ -438,10 +411,7 @@ def with_qdrant_retry(func):
                 status_code = getattr(e, "status_code", None)
                 # If status_code is present and not retryable and not ConnectionError, raise immediately after first failure
                 # But for ConnectionError, always retry
-                if (
-                    status_code is not None
-                    and status_code not in cfg.RETRYABLE_STATUS_CODES
-                ):
+                if status_code is not None and status_code not in cfg.RETRYABLE_STATUS_CODES:
                     # For non-retryable status, re-raise immediately if it's not a ConnectionError
                     # However spec says: Re-raise non-retryable status codes immediately
                     # We check attempt >0? spec says: if status_code not in RETRYABLE and attempt>0: raise
@@ -456,10 +426,7 @@ def with_qdrant_retry(func):
                     jitter = delay * cfg.JITTER_RANGE * (2 * random.random() - 1)
                     sleep_time = max(0, delay + jitter)
 
-                    logging.warning(
-                        f"Qdrant retry {attempt + 1}/{cfg.MAX_RETRIES} "
-                        f"after {sleep_time:.2f}s: {e}"
-                    )
+                    logging.warning(f"Qdrant retry {attempt + 1}/{cfg.MAX_RETRIES} " f"after {sleep_time:.2f}s: {e}")
                     time.sleep(sleep_time)
 
         raise last_exception
@@ -546,10 +513,7 @@ def check_memory_usage() -> None:
     rss_mb = process.memory_info().rss / (1024 * 1024)
 
     if rss_mb > _RAM_CRITICAL_MB:
-        logging.critical(
-            f"MEMORY_CRITICAL: {rss_mb:.0f} MB RSS (limit: 250 MB). "
-            f"Clearing caches to prevent OOM kill."
-        )
+        logging.critical(f"MEMORY_CRITICAL: {rss_mb:.0f} MB RSS (limit: 250 MB). " f"Clearing caches to prevent OOM kill.")
         # Nuclear option: clear Streamlit's resource cache
         try:
             import streamlit as st

@@ -1,0 +1,40 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 250
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = []
+
+[tool.black]
+line-length = 250
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 250
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = false
+disallow_untyped_defs = false
+check_untyped_defs = false
+# Pydantic uses dynamic type generation; ignore those errors
+disable_error_code = ["valid-type", "no-redef", "arg-type", "attr-defined"]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "scripts/*", "wealth_chronicle_rag/*", "*/__pycache__/*", "*/.venv/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "except Exception:",
+    "except:",
+]

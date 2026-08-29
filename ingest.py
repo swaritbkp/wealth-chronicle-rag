@@ -15,9 +15,14 @@ from pathlib import Path
 import pymupdf4llm
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
-from qdrant_client.models import (Distance, HnswConfigDiff,
-                                  OptimizersConfigDiff, PayloadSchemaType,
-                                  PointStruct, VectorParams)
+from qdrant_client.models import (
+    Distance,
+    HnswConfigDiff,
+    OptimizersConfigDiff,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 
 from engine import with_qdrant_retry
 from schemas import ChunkPayload
@@ -138,9 +143,7 @@ def sliding_window_chunk(
         chunk_text: str = " ".join(chunk_words)
 
         # --- Noise filter (FR-ING-03) ---
-        if len(chunk_text) >= min_chars and not chunk_text.lower().startswith(
-            _NOISE_PREFIXES
-        ):
+        if len(chunk_text) >= min_chars and not chunk_text.lower().startswith(_NOISE_PREFIXES):
             chunks.append(chunk_text)
 
         i += stride
@@ -164,17 +167,11 @@ def validate_extraction(pages: list[dict], pdf_path: str) -> None:
     total_pages = len(pages)
 
     if total_chars < 500:
-        raise ValueError(
-            f"EXTRACTION_FAILURE: {pdf_path} yielded only {total_chars} chars. "
-            f"This PDF may be scanned/image-only. Run OCR preprocessing first."
-        )
+        raise ValueError(f"EXTRACTION_FAILURE: {pdf_path} yielded only {total_chars} chars. " f"This PDF may be scanned/image-only. Run OCR preprocessing first.")
 
     coverage = non_empty_pages / total_pages if total_pages > 0 else 0
     if coverage < 0.5:
-        raise ValueError(
-            f"LOW_COVERAGE: {pdf_path} — only {non_empty_pages}/{total_pages} pages "
-            f"({coverage:.0%}) had extractable text. Check for mixed scan/text pages."
-        )
+        raise ValueError(f"LOW_COVERAGE: {pdf_path} — only {non_empty_pages}/{total_pages} pages " f"({coverage:.0%}) had extractable text. Check for mixed scan/text pages.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,9 +217,7 @@ def generate_chunk_id(edition_date: str, page_number: int, chunk_index: int) -> 
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def init_collection(
-    client: QdrantClient, collection_name: str = COLLECTION_NAME
-) -> None:
+def init_collection(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
     """Initialize Qdrant collection with HNSW config.
 
     Creates collection if it does not exist, with:
@@ -252,9 +247,7 @@ def init_collection(
     print(f"[OK] Created collection: {collection_name}")
 
 
-def ensure_payload_indexes(
-    client: QdrantClient, collection_name: str = COLLECTION_NAME
-) -> None:
+def ensure_payload_indexes(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
     """Create payload indexes for filtering and sorting.
 
     Creates keyword index on edition_date, integer index on page_number,
@@ -282,9 +275,7 @@ def ensure_payload_indexes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def ingest_pdf(
-    pdf_path: str, edition_date: str, client: QdrantClient | None = None
-) -> int:
+def ingest_pdf(pdf_path: str, edition_date: str, client: QdrantClient | None = None) -> int:
     """Full ingestion pipeline for a single PDF.
 
     Steps:
@@ -307,16 +298,12 @@ def ingest_pdf(
     try:
         datetime.strptime(edition_date, "%Y-%m-%d")
     except ValueError:
-        raise ValueError(
-            f"Invalid edition_date format: {edition_date}. Expected YYYY-MM-DD"
-        )
+        raise ValueError(f"Invalid edition_date format: {edition_date}. Expected YYYY-MM-DD")
 
     # Get Qdrant client if not provided
     if client is None:
         qdrant_url = os.environ.get("QDRANT_URL")
-        qdrant_key = os.environ.get("QDRANT_ADMIN_KEY") or os.environ.get(
-            "QDRANT_API_KEY"
-        )
+        qdrant_key = os.environ.get("QDRANT_ADMIN_KEY") or os.environ.get("QDRANT_API_KEY")
         if not qdrant_url:
             raise ValueError("QDRANT_URL environment variable not set")
         client = QdrantClient(url=qdrant_url, api_key=qdrant_key)
@@ -351,9 +338,7 @@ def ingest_pdf(
 
         for chunk_idx, chunk_text in enumerate(chunks):
             chunk_id = generate_chunk_id(edition_date, page_number, chunk_idx)
-            point_id = generate_point_id(
-                edition_date, page_number, chunk_idx, chunk_text
-            )
+            point_id = generate_point_id(edition_date, page_number, chunk_idx, chunk_text)
 
             char_count = len(chunk_text)
             word_count = len(chunk_text.split())
@@ -433,9 +418,7 @@ if __name__ == "__main__":
     try:
         datetime.strptime(edition_date, "%Y-%m-%d")
     except ValueError:
-        print(
-            f"Error: Invalid date format '{edition_date}'. Expected YYYY-MM-DD (e.g., 2026-08-24)"
-        )
+        print(f"Error: Invalid date format '{edition_date}'. Expected YYYY-MM-DD (e.g., 2026-08-24)")
         sys.exit(1)
 
     # Validate PDF path

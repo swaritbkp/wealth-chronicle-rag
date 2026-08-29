@@ -94,15 +94,9 @@ class RerankedPassage(BaseModel):
     point_id: str
     text: str
     payload: ChunkPayload
-    cross_encoder_score: confloat(ge=0.0, le=1.0) = Field(
-        ..., description="FlashRank normalized cross-encoder relevance score"
-    )
-    rrf_score: float = Field(
-        ..., description="Reciprocal Rank Fusion score before reranking"
-    )
-    time_decay_multiplier: float = Field(
-        ..., ge=1.0, description="Recency boost: 1.0 + alpha*exp(-delta_t/tau)"
-    )
+    cross_encoder_score: confloat(ge=0.0, le=1.0) = Field(..., description="FlashRank normalized cross-encoder relevance score")
+    rrf_score: float = Field(..., description="Reciprocal Rank Fusion score before reranking")
+    time_decay_multiplier: float = Field(..., ge=1.0, description="Recency boost: 1.0 + alpha*exp(-delta_t/tau)")
     final_rank: int = Field(..., ge=1, le=20)
 
 
@@ -113,9 +107,7 @@ class CitationMetadata(BaseModel):
     page_number: int
     article_title: str | None
     cross_encoder_score: confloat(ge=0.0, le=1.0)
-    excerpt_preview: constr(max_length=300) = Field(
-        ..., description="First 300 chars of chunk text for UI preview"
-    )
+    excerpt_preview: constr(max_length=300) = Field(..., description="First 300 chars of chunk text for UI preview")
 
 
 # ─── Evaluation Domain ──────────────────────────────────────────────

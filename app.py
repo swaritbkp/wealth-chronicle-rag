@@ -12,12 +12,20 @@ import streamlit as st
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
-from engine import (BM25Index, GeminiRateLimiter, QueryTrace,
-                    check_memory_usage, load_and_validate_prompts,
-                    reciprocal_rank_fusion, rerank_candidates, safe_generate,
-                    should_refuse, timer, with_qdrant_retry)
-from schemas import (ChunkPayload, RerankedPassage, RetrievalSource,
-                     SearchResult)
+from engine import (
+    BM25Index,
+    GeminiRateLimiter,
+    QueryTrace,
+    check_memory_usage,
+    load_and_validate_prompts,
+    reciprocal_rank_fusion,
+    rerank_candidates,
+    safe_generate,
+    should_refuse,
+    timer,
+    with_qdrant_retry,
+)
+from schemas import ChunkPayload, RerankedPassage, RetrievalSource, SearchResult
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Config
@@ -114,9 +122,7 @@ def init_services():
         logging.warning(f"BM25 index build failed: {e}")
         # Fallback dummy index
         try:
-            bm25_index = BM25Index(
-                corpus_texts=["dummy placeholder"], corpus_ids=["dummy_id"]
-            )
+            bm25_index = BM25Index(corpus_texts=["dummy placeholder"], corpus_ids=["dummy_id"])
         except Exception:
             bm25_index = None
 
@@ -157,9 +163,7 @@ except Exception as e:
 
 st.title("📈 WealthChronicle Search")
 st.caption("AI-Powered Research Engine for Personal Finance Archives")
-st.info(
-    "⚠️ **Disclaimer:** Educational research tool indexing archived publications. Does not constitute registered financial, legal, or tax advisory services."
-)
+st.info("⚠️ **Disclaimer:** Educational research tool indexing archived publications. Does not constitute registered financial, legal, or tax advisory services.")
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -176,11 +180,7 @@ for msg in st.session_state["messages"]:
         if msg["role"] == "assistant" and "citations" in msg:
             with st.expander("🔍 View Verified Source Passages"):
                 for c in msg["citations"]:
-                    st.markdown(
-                        f"**Edition:** `{c['edition_date']}` | "
-                        f"**Page:** `{c['page_number']}` | "
-                        f"**Cross-Encoder Score:** `{c['cross_encoder_score']:.4f}`"
-                    )
+                    st.markdown(f"**Edition:** `{c['edition_date']}` | " f"**Page:** `{c['page_number']}` | " f"**Cross-Encoder Score:** `{c['cross_encoder_score']:.4f}`")
                     st.caption(c["text"])
                     st.divider()
 
@@ -188,9 +188,7 @@ for msg in st.session_state["messages"]:
 # Query processing
 # ─────────────────────────────────────────────────────────────────────────────
 
-user_query = st.chat_input(
-    "Ask about tax slabs, health claim rejections, NPS allocations..."
-)
+user_query = st.chat_input("Ask about tax slabs, health claim rejections, NPS allocations...")
 
 if user_query:
     # TASK-4.5: Session state pruning & memory guard — cap history
@@ -258,9 +256,7 @@ if user_query:
                                     point_id=str(h.id),
                                     text=h.payload.get("text", ""),
                                     payload=payload,
-                                    score=(
-                                        float(h.score) if hasattr(h, "score") else 0.0
-                                    ),
+                                    score=(float(h.score) if hasattr(h, "score") else 0.0),
                                     source=RetrievalSource.DENSE,
                                     dense_rank=rank + 1,
                                 )
@@ -278,11 +274,7 @@ if user_query:
                             trace.sparse_candidates = len(sparse_results)
                             # Ensure BM25 payloads are in all_payloads
                             # Need to fetch payloads for sparse-only IDs that weren't in dense
-                            sparse_only_ids = [
-                                pid
-                                for pid, _ in sparse_results
-                                if pid not in all_payloads
-                            ]
+                            sparse_only_ids = [pid for pid, _ in sparse_results if pid not in all_payloads]
                             if sparse_only_ids:
                                 try:
                                     # Retrieve sparse-only payloads via Retrieve
@@ -298,9 +290,7 @@ if user_query:
                                         except Exception:
                                             continue
                                 except Exception as e:
-                                    logging.warning(
-                                        f"Failed to fetch sparse payloads: {e}"
-                                    )
+                                    logging.warning(f"Failed to fetch sparse payloads: {e}")
                         else:
                             trace.sparse_candidates = 0
                     except Exception as e:
@@ -322,11 +312,7 @@ if user_query:
                 # 5. Rerank
                 with timer(trace, "reranking_ms"):
                     # Build payload_map for reranker (only those in fused)
-                    payload_map = {
-                        pid: all_payloads[pid]
-                        for pid in [c["point_id"] for c in fused_candidates]
-                        if pid in all_payloads
-                    }
+                    payload_map = {pid: all_payloads[pid] for pid in [c["point_id"] for c in fused_candidates] if pid in all_payloads}
                     reranked: list[RerankedPassage] = rerank_candidates(
                         query=user_query,
                         candidates=fused_candidates,
@@ -335,9 +321,7 @@ if user_query:
                         top_k=4,
                     )
                     trace.reranked_top_k = len(reranked)
-                    trace.top1_cross_encoder_score = (
-                        reranked[0].cross_encoder_score if reranked else 0.0
-                    )
+                    trace.top1_cross_encoder_score = reranked[0].cross_encoder_score if reranked else 0.0
 
                 # 6. Refusal check
                 refused = should_refuse(reranked, prompts)
@@ -354,25 +338,13 @@ if user_query:
                     # ─── TASK-4.3: Prompt Assembly & Generation ───
                     with timer(trace, "prompt_assembly_ms"):
                         # Sort passages by edition_date descending (most recent first)
-                        reranked_sorted = sorted(
-                            reranked, key=lambda x: x.payload.edition_date, reverse=True
-                        )
-                        context_str = "\n\n---\n\n".join(
-                            [
-                                f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}"
-                                for p in reranked_sorted
-                            ]
-                        )
-                        full_prompt = (
-                            f"{prompts['system_prompt']}\n\n"
-                            f"{prompts['rag_prompt_template'].format(context=context_str, query=user_query)}"
-                        )
+                        reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
+                        context_str = "\n\n---\n\n".join([f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted])
+                        full_prompt = f"{prompts['system_prompt']}\n\n" f"{prompts['rag_prompt_template'].format(context=context_str, query=user_query)}"
 
                     # Call Gemini via safe_generate (with rate limiter)
                     with timer(trace, "llm_total_ms"):
-                        answer_text = safe_generate(
-                            gemini_model, full_prompt, rate_limiter
-                        )
+                        answer_text = safe_generate(gemini_model, full_prompt, rate_limiter)
 
                     st.markdown(answer_text)
                     trace.answer_length_chars = len(answer_text)
@@ -393,18 +365,12 @@ if user_query:
                     # TASK-4.4: Citation expander
                     with st.expander("🔍 View Verified Source Passages"):
                         for p in reranked_sorted:
-                            st.markdown(
-                                f"**Edition:** `{p.payload.edition_date}` | "
-                                f"**Page:** `{p.payload.page_number}` | "
-                                f"**Cross-Encoder Score:** `{p.cross_encoder_score:.4f}`"
-                            )
+                            st.markdown(f"**Edition:** `{p.payload.edition_date}` | " f"**Page:** `{p.payload.page_number}` | " f"**Cross-Encoder Score:** `{p.cross_encoder_score:.4f}`")
                             st.caption(p.text)
                             st.divider()
 
                 # Finalize trace timing
-                trace.total_ms = (
-                    datetime.utcnow() - overall_start
-                ).total_seconds() * 1000
+                trace.total_ms = (datetime.utcnow() - overall_start).total_seconds() * 1000
                 trace.emit()
 
                 # Append assistant message to session state
@@ -415,9 +381,7 @@ if user_query:
 
                 # TASK-4.5: Pruning after assistant addition
                 if len(st.session_state["messages"]) > MAX_MESSAGES:
-                    st.session_state["messages"] = st.session_state["messages"][
-                        -MAX_MESSAGES:
-                    ]
+                    st.session_state["messages"] = st.session_state["messages"][-MAX_MESSAGES:]
 
             except Exception as e:
                 logging.error(f"Query pipeline failed: {e}", exc_info=True)
@@ -425,6 +389,4 @@ if user_query:
                 st.error(err_msg)
                 trace.refused = True
                 trace.emit()
-                st.session_state["messages"].append(
-                    {"role": "assistant", "content": err_msg}
-                )
+                st.session_state["messages"].append({"role": "assistant", "content": err_msg})

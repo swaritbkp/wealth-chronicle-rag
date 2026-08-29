@@ -117,18 +117,10 @@ def _run_rag_pipeline(
     contexts = [h.payload["text"] for h in top_chunks]
 
     # 4. Generate answer
-    context_str = "\n\n---\n\n".join(
-        [
-            f"[Edition: {h.payload['edition_date']} | Page: {h.payload['page_number']}]\n{h.payload['text']}"
-            for h in top_chunks
-        ]
-    )
+    context_str = "\n\n---\n\n".join([f"[Edition: {h.payload['edition_date']} | Page: {h.payload['page_number']}]\n{h.payload['text']}" for h in top_chunks])
 
     prompts = services["prompts"]
-    prompt = (
-        f"{prompts['system_prompt']}\n\n"
-        f"{prompts['rag_prompt_template'].format(context=context_str, query=question)}"
-    )
+    prompt = f"{prompts['system_prompt']}\n\n" f"{prompts['rag_prompt_template'].format(context=context_str, query=question)}"
 
     response = services["gemini"].generate_content(prompt)
     return (response.text, contexts)
@@ -142,23 +134,15 @@ def test_rag_faithfulness_and_relevancy(rag_services, golden_data):
 
     # Offline mode: if services are mocked/None, skip heavy evaluation and use dummy metrics
     if rag_services.get("gemini") is None:
-        print(
-            "\n[OFFLINE] No live credentials — using mock evaluation to verify thresholds"
-        )
+        print("\n[OFFLINE] No live credentials — using mock evaluation to verify thresholds")
         faith = 0.97
         relevancy = 0.93
         precision = 0.90
         print(f"\n{'='*60}")
         print("  RAGAS Evaluation Results (MOCK OFFLINE)")
-        print(
-            f"  Faithfulness:      {faith:.4f}  (threshold: {FAITHFULNESS_THRESHOLD})"
-        )
-        print(
-            f"  Answer Relevancy:  {relevancy:.4f}  (threshold: {ANSWER_RELEVANCY_THRESHOLD})"
-        )
-        print(
-            f"  Context Precision: {precision:.4f}  (threshold: {CONTEXT_PRECISION_THRESHOLD})"
-        )
+        print(f"  Faithfulness:      {faith:.4f}  (threshold: {FAITHFULNESS_THRESHOLD})")
+        print(f"  Answer Relevancy:  {relevancy:.4f}  (threshold: {ANSWER_RELEVANCY_THRESHOLD})")
+        print(f"  Context Precision: {precision:.4f}  (threshold: {CONTEXT_PRECISION_THRESHOLD})")
         print(f"{'='*60}\n")
         assert faith >= FAITHFULNESS_THRESHOLD
         assert relevancy >= ANSWER_RELEVANCY_THRESHOLD
@@ -181,8 +165,7 @@ def test_rag_faithfulness_and_relevancy(rag_services, golden_data):
     try:
         from datasets import Dataset
         from ragas import evaluate
-        from ragas.metrics import (answer_relevancy, context_precision,
-                                   faithfulness)
+        from ragas.metrics import answer_relevancy, context_precision, faithfulness
 
         eval_dataset = Dataset.from_dict(
             {
@@ -228,20 +211,10 @@ def test_rag_faithfulness_and_relevancy(rag_services, golden_data):
     print(f"\n{'='*60}")
     print("  RAGAS Evaluation Results")
     print(f"  Faithfulness:      {faith:.4f}  (threshold: {FAITHFULNESS_THRESHOLD})")
-    print(
-        f"  Answer Relevancy:  {relevancy:.4f}  (threshold: {ANSWER_RELEVANCY_THRESHOLD})"
-    )
-    print(
-        f"  Context Precision: {precision:.4f}  (threshold: {CONTEXT_PRECISION_THRESHOLD})"
-    )
+    print(f"  Answer Relevancy:  {relevancy:.4f}  (threshold: {ANSWER_RELEVANCY_THRESHOLD})")
+    print(f"  Context Precision: {precision:.4f}  (threshold: {CONTEXT_PRECISION_THRESHOLD})")
     print(f"{'='*60}\n")
 
-    assert (
-        faith >= FAITHFULNESS_THRESHOLD
-    ), f"Faithfulness regression: {faith:.4f} < {FAITHFULNESS_THRESHOLD}"
-    assert (
-        relevancy >= ANSWER_RELEVANCY_THRESHOLD
-    ), f"Answer Relevancy regression: {relevancy:.4f} < {ANSWER_RELEVANCY_THRESHOLD}"
-    assert (
-        precision >= CONTEXT_PRECISION_THRESHOLD
-    ), f"Context Precision regression: {precision:.4f} < {CONTEXT_PRECISION_THRESHOLD}"
+    assert faith >= FAITHFULNESS_THRESHOLD, f"Faithfulness regression: {faith:.4f} < {FAITHFULNESS_THRESHOLD}"
+    assert relevancy >= ANSWER_RELEVANCY_THRESHOLD, f"Answer Relevancy regression: {relevancy:.4f} < {ANSWER_RELEVANCY_THRESHOLD}"
+    assert precision >= CONTEXT_PRECISION_THRESHOLD, f"Context Precision regression: {precision:.4f} < {CONTEXT_PRECISION_THRESHOLD}"
