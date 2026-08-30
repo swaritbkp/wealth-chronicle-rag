@@ -342,12 +342,29 @@ if user_query:
                     trace.citation_count = 0
                     citations = []
                 else:
-                    # ─── TASK-4.3: Prompt Assembly & Generation ───
+                    # ─── TASK-4.3: Prompt Assembly & Generation (v2.0 — structured, citation-disciplined) ───
                     with timer(trace, "prompt_assembly_ms"):
-                        # Sort passages by edition_date descending (most recent first)
+                        # Sort passages by edition_date descending (most recent first) for temporal grounding
                         reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
-                        context_str = "\n\n---\n\n".join([f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted])
-                        full_prompt = f"{prompts['system_prompt']}\n\n" f"{prompts['rag_prompt_template'].format(context=context_str, query=user_query)}"
+                        # Dynamic passage formatting per v2.0 spec
+                        context_passages = "\n\n".join(
+                            [
+                                f"[Passage {i} | Edition: {p.payload.edition_date} | Page: {p.payload.page_number} | Section: {p.payload.article_title or 'Untitled'}]\n{p.text}"
+                                for i, p in enumerate(reranked_sorted, start=1)
+                            ]
+                        )
+                        # Use v2.0 rag_synthesis_template if available, fallback to legacy
+                        if "rag_synthesis_template" in prompts:
+                            full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_synthesis_template"].format(
+                                context_passages=context_passages, query=user_query
+                            )
+                        else:
+                            context_str = "\n\n---\n\n".join(
+                                [f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted]
+                            )
+                            full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_prompt_template"].format(
+                                context=context_str, query=user_query
+                            )
 
                     # Call Gemini via safe_generate (with rate limiter)
                     with timer(trace, "llm_total_ms"):

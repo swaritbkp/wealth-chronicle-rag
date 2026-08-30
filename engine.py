@@ -39,16 +39,21 @@ from schemas import ChunkPayload, RerankedPassage, SearchResult
 logger = logging.getLogger("wealthchronicle.trace")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TASK-1.5: Config Loader & Validator
+# TASK-1.5: Config Loader & Validator (v2.0 — strict grounding)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _REQUIRED_TEMPLATE_VARS = {
+    "rag_synthesis_template": {"context_passages", "query"},
+    # Legacy alias for backward compatibility
     "rag_prompt_template": {"context", "query"},
 }
 
 
 def load_and_validate_prompts(config_path: str = "config/prompts.yaml") -> dict:
-    """Load prompt config with template variable validation.
+    """Load prompt config with template variable validation (v2.0).
+
+    Validates version, system_prompt, rag_synthesis_template, refusal_message, guardrails.
+    Retains backward compatibility with legacy rag_prompt_template / refusal_config.
 
     Raises:
         FileNotFoundError: Config file missing.
@@ -62,19 +67,28 @@ def load_and_validate_prompts(config_path: str = "config/prompts.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # Validate required keys
-    for key in (
-        "system_prompt",
-        "rag_prompt_template",
-        "refusal_message",
-        "refusal_config",
-    ):
+    # Validate required keys (v2.0 schema)
+    for key in ("system_prompt", "refusal_message"):
         if key not in config:
             raise KeyError(f"Missing required prompt config key: {key}")
 
-    # Validate template variables
+    # Version can be "version" or legacy "prompt_version"
+    if "version" not in config and "prompt_version" not in config:
+        raise KeyError("Missing required prompt config key: version / prompt_version")
+
+    # Rag template: prefer v2.0 rag_synthesis_template, fallback to legacy rag_prompt_template
+    if "rag_synthesis_template" not in config and "rag_prompt_template" not in config:
+        raise KeyError("Missing required prompt config key: rag_synthesis_template / rag_prompt_template")
+
+    # Guardrails / refusal config: at least one must exist
+    if "guardrails" not in config and "refusal_config" not in config:
+        raise KeyError("Missing required prompt config key: guardrails / refusal_config")
+
+    # Validate template variables for whichever template is present
     formatter = string.Formatter()
     for template_key, required_vars in _REQUIRED_TEMPLATE_VARS.items():
+        if template_key not in config:
+            continue
         template = config[template_key]
         found_vars = {field_name for _, field_name, _, _ in formatter.parse(template) if field_name is not None}
         missing = required_vars - found_vars
@@ -283,8 +297,11 @@ def should_refuse(
         True → emit refusal message, skip LLM call.
         False → proceed with prompt assembly and generation.
     """
-    theta: float = config.get("refusal_config", {}).get("cross_encoder_min_score", 0.25)
-    min_chunks: int = config.get("refusal_config", {}).get("min_relevant_chunks", 1)
+    # Support both v2.0 guardrails and legacy refusal_config
+    guardrails = config.get("guardrails", {})
+    refusal_config = config.get("refusal_config", {})
+    theta: float = guardrails.get("refusal_threshold", refusal_config.get("cross_encoder_min_score", 0.25))
+    min_chunks: int = guardrails.get("min_relevant_chunks", refusal_config.get("min_relevant_chunks", 1))
 
     # Condition 1: Empty retrieval
     if not reranked:
