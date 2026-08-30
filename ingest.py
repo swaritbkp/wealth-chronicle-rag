@@ -810,6 +810,9 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         if not text:
             continue
 
+        # Extract section/article title for structured metadata (F-09)
+        section_title = _extract_section_title(text)
+
         chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
 
         for chunk_idx, chunk_text in enumerate(chunks):
@@ -819,10 +822,19 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
             char_count = len(chunk_text)
             word_count = len(chunk_text.split())
 
+            # Use section title as article_title if available; fallback to parsing prefix in chunk
+            article_title: str | None = section_title
+            if article_title is None and chunk_text.startswith("[Section:"):
+                # Try to parse prefix from chunk itself
+                m = re.match(r"^\[Section:\s*([^\]]+)\]", chunk_text)
+                if m:
+                    article_title = m.group(1).strip()
+
             payload = ChunkPayload(
                 chunk_id=chunk_id,
                 edition_date=edition_date,
                 page_number=page_number,
+                article_title=article_title,
                 text=chunk_text,
                 char_count=char_count,
                 word_count=word_count,

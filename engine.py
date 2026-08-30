@@ -326,8 +326,11 @@ class GeminiRateLimiter:
             elapsed = now - self.last_request_time
             if elapsed < self.interval:
                 sleep_time = self.interval - elapsed
-                time.sleep(sleep_time)
-            self.last_request_time = time.monotonic()
+            else:
+                sleep_time = 0
+            self.last_request_time = now + max(sleep_time, 0)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
 
 def safe_generate(model, prompt: str, rate_limiter: GeminiRateLimiter) -> str:
@@ -352,17 +355,15 @@ def safe_generate(model, prompt: str, rate_limiter: GeminiRateLimiter) -> str:
             except ImportError:
                 pass
 
-            if is_429 and attempt < 2:
-                wait = 2**attempt * 5  # 5s, 10s, 20s
-                logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
-                time.sleep(wait)
-                continue
-            elif is_429:
-                # After 3 failures
-                wait = 2**attempt * 5
-                logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
-                time.sleep(wait)
-                return "The service is temporarily busy. Please try again in a few moments."
+            if is_429:
+                if attempt < 2:
+                    wait = 2**attempt * 5  # 5s, 10s
+                    logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                else:
+                    logging.warning("Gemini 429 — all 3 attempts exhausted")
+                    return "The service is temporarily busy. Please try again in a few moments."
             else:
                 raise
 
@@ -379,7 +380,7 @@ class QdrantRetryConfig:
     BASE_DELAY_S: float = 0.5  # 500ms initial delay
     MAX_DELAY_S: float = 8.0  # Cap at 8 seconds
     JITTER_RANGE: float = 0.25  # ±25% jitter
-    RETRYABLE_STATUS_CODES: set = {429, 502, 503, 504}
+    RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 502, 503, 504})
 
 
 def with_qdrant_retry(func):

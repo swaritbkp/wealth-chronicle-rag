@@ -4,8 +4,11 @@ Covers TASK-4.1 through TASK-4.5
 """
 
 import logging
+import os
+import re
+import tempfile
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import google.generativeai as genai
 import streamlit as st
@@ -35,6 +38,18 @@ st.set_page_config(page_title="WealthChronicle AI", page_icon="📈", layout="ce
 
 logger = logging.getLogger("wealthchronicle.trace")
 logging.basicConfig(level=logging.INFO)
+
+
+@with_qdrant_retry
+def _dense_search(
+    client: QdrantClient, vector: list[float], collection: str = "wealth_archive", limit: int = 12
+):
+    """Module-level dense search helper with retry (extracted from per-query closure)."""
+    # Compatibility: Qdrant 1.19 prefers query_points, fallback to search
+    if hasattr(client, "query_points"):
+        resp = client.query_points(collection_name=collection, query=vector, limit=limit, with_payload=True)
+        return resp.points if hasattr(resp, "points") else resp
+    return client.search(collection_name=collection, query_vector=vector, limit=limit)  # type: ignore[attr-defined]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TASK-4.1: Service Initialization & Cache Setup
@@ -70,7 +85,8 @@ def init_services():
     try:
         from flashrank import Ranker
 
-        ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="/tmp/models")
+        cache_dir = os.path.join(tempfile.gettempdir(), "flashrank_models")
+        ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir=cache_dir)
         ranker_available = True
     except Exception as e:
         logging.warning(f"FlashRank init failed, degrading to RRF-only: {e}")
@@ -215,9 +231,9 @@ if user_query:
             trace = QueryTrace(
                 trace_id=str(uuid.uuid4()),
                 query=user_query,
-                timestamp_utc=datetime.utcnow().isoformat() + "Z",
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
             )
-            overall_start = datetime.utcnow()
+            overall_start = datetime.now(timezone.utc)
 
             try:
                 # ─── TASK-4.2: Hybrid Retrieval Orchestrator ───
@@ -228,17 +244,8 @@ if user_query:
                 # 2. Dense retrieval
                 dense_results: list[SearchResult] = []
                 with timer(trace, "dense_retrieval_ms"):
-
-                    @with_qdrant_retry
-                    def _dense_search():
-                        return qdrant_client.search(
-                            collection_name="wealth_archive",
-                            query_vector=q_vector,
-                            limit=12,
-                        )
-
                     try:
-                        hits = _dense_search()
+                        hits = _dense_search(qdrant_client, q_vector, "wealth_archive", 12)
                     except Exception as e:
                         logging.error(f"Dense retrieval failed: {e}")
                         hits = []
@@ -348,7 +355,7 @@ if user_query:
 
                     st.markdown(answer_text)
                     trace.answer_length_chars = len(answer_text)
-                    trace.citation_count = len(reranked_sorted)
+                    trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
 
                     # Prepare citations for expander
                     citations = [
@@ -370,7 +377,7 @@ if user_query:
                             st.divider()
 
                 # Finalize trace timing
-                trace.total_ms = (datetime.utcnow() - overall_start).total_seconds() * 1000
+                trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
                 trace.emit()
 
                 # Append assistant message to session state

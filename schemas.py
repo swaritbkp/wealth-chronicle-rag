@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
+from typing import Annotated
 
-from pydantic import BaseModel, Field, confloat, constr, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 # ─── Ingestion Domain ────────────────────────────────────────────────
 
@@ -55,7 +56,7 @@ class ChunkPayload(BaseModel):
         description="Precomputed whitespace-split word count",
     )
     ingested_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp of ingestion run",
     )
 
@@ -94,7 +95,7 @@ class RerankedPassage(BaseModel):
     point_id: str
     text: str
     payload: ChunkPayload
-    cross_encoder_score: confloat(ge=0.0, le=1.0) = Field(..., description="FlashRank normalized cross-encoder relevance score")
+    cross_encoder_score: Annotated[float, Field(ge=0.0, le=1.0, description="FlashRank normalized cross-encoder relevance score")]
     rrf_score: float = Field(..., description="Reciprocal Rank Fusion score before reranking")
     time_decay_multiplier: float = Field(..., ge=1.0, description="Recency boost: 1.0 + alpha*exp(-delta_t/tau)")
     final_rank: int = Field(..., ge=1, le=20)
@@ -106,8 +107,8 @@ class CitationMetadata(BaseModel):
     edition_date: date
     page_number: int
     article_title: str | None
-    cross_encoder_score: confloat(ge=0.0, le=1.0)
-    excerpt_preview: constr(max_length=300) = Field(..., description="First 300 chars of chunk text for UI preview")
+    cross_encoder_score: Annotated[float, Field(ge=0.0, le=1.0)]
+    excerpt_preview: Annotated[str, Field(max_length=300, description="First 300 chars of chunk text for UI preview")]
 
 
 # ─── Evaluation Domain ──────────────────────────────────────────────
@@ -148,10 +149,7 @@ class EvaluationItem(BaseModel):
         min_length=1,
         description="Page numbers from which the ground truth was derived",
     )
-    difficulty: constr(pattern=r"^(easy|medium|hard)$") = Field(
-        default="medium",
-        description="Subjective difficulty for triage",
-    )
+    difficulty: Annotated[str, Field(pattern=r"^(easy|medium|hard)$", default="medium", description="Subjective difficulty for triage")]
 
     @field_validator("source_edition_dates", mode="before")
     @classmethod
