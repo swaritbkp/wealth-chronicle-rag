@@ -488,12 +488,20 @@ def _sliding_window_prose(
             if not chunk_text.startswith("[Section:"):
                 chunk_text = f"{prefix}{chunk_text}"
 
-        # --- Noise filter (FR-ING-03) + statutory warning ---
-        if len(chunk_text) >= min_chars and not chunk_text.lower().startswith(_NOISE_PREFIXES):
+        # --- Noise filter (FR-ING-03) + statutory warning + word count ---
+        word_count = len(chunk_text.split())
+        # Require both char and word count (Pydantic: char>=120 word>=20), but allow tables with pipe to bypass word count
+        has_table = "|" in chunk_text
+        if len(chunk_text) >= min_chars and word_count >= 20 and not chunk_text.lower().startswith(_NOISE_PREFIXES):
             if _is_statutory_warning_dominated(chunk_text):
                 i += stride
                 continue
             chunks.append(chunk_text)
+        elif has_table and len(chunk_text.strip()) >= 50:
+            # Small table-like prose that contains pipes but was split as prose (edge case)
+            # Keep it if it has meaningful table structure, even if word count is borderline
+            if not chunk_text.lower().startswith(_NOISE_PREFIXES) and not _is_statutory_warning_dominated(chunk_text):
+                chunks.append(chunk_text)
 
         i += stride
 

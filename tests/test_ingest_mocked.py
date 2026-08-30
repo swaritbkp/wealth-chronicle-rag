@@ -26,10 +26,13 @@ class TestSlidingWindowChunkerEdgeCases:
         assert sliding_window_chunk("   \n\t  ") == []
 
     def test_text_under_min_chars_filtered(self) -> None:
-        # 10 chars → below 120
+        # Below both char and word thresholds → filtered
         assert sliding_window_chunk("Short text.") == []
         assert sliding_window_chunk("A" * 119) == []
-        assert sliding_window_chunk("A" * 120) != []  # exactly at threshold
+        # Single word 120 chars still filtered due to word_count <20 (Pydantic)
+        assert sliding_window_chunk("A" * 120) == []
+        # Multi-word 120+ chars and >=20 words should pass
+        assert sliding_window_chunk(("word " * 30).strip()) != []  # 30 words, ~150 chars
 
     def test_advertisement_prefix_filtered_case_insensitive(self) -> None:
         noise = "Advertisement for premium subscriptions. " * 50
@@ -58,12 +61,11 @@ class TestSlidingWindowChunkerEdgeCases:
         assert any("100" in c for c in chunks)
 
     def test_massive_unbroken_string_no_spaces(self) -> None:
-        # Single massive token with no spaces → split gives 1 word
+        # Single massive token with no spaces → split gives 1 word, but word_count <20 so filtered per Pydantic
         massive = "A" * 5000
         chunks = sliding_window_chunk(massive, chunk_size=600, overlap=100, min_chars=120)
-        # Single word string of 5000 chars should produce exactly 1 chunk (no infinite loop)
-        assert len(chunks) == 1
-        assert chunks[0] == massive
+        # Should not crash and should be filtered due to word_count <20 (no orphan short chunks)
+        assert len(chunks) == 0
 
     def test_massive_unbroken_repeating_words(self) -> None:
         # 5000 words of same token
@@ -104,11 +106,15 @@ class TestSlidingWindowChunkerEdgeCases:
         assert chunks[0].lower().startswith("this")
 
     def test_120_char_minimum_boundary(self) -> None:
-        # Exactly 120 chars should pass, 119 fail
+        # Below thresholds → filtered
         txt_119 = "A" * 119
         txt_120 = "A" * 120
         assert sliding_window_chunk(txt_119) == []
-        assert sliding_window_chunk(txt_120) != []
+        # Single word 120 chars still filtered due to word_count (Pydantic)
+        assert sliding_window_chunk(txt_120) == []
+        # Multi-word 120+ chars and >=20 words should pass
+        multi = "word " * 30  # 150 chars, 30 words
+        assert sliding_window_chunk(multi.strip()) != []
 
     def test_chunk_size_and_overlap_math(self) -> None:
         # Verify chunk count formula: N = ceil((W - S)/stride) + 1
