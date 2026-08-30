@@ -1,11 +1,17 @@
-"""tests/test_ingest_mocked.py — Chunker edge cases and ID invariants."""
+"""tests/test_ingest_mocked.py — Chunker edge cases, ID invariants, and ET Wealth harness."""
 
 from __future__ import annotations
 
 import hashlib
 import re
 
-from ingest import generate_chunk_id, generate_point_id, sliding_window_chunk
+from ingest import (
+    clean_extracted_text,
+    extract_edition_date_from_text,
+    generate_chunk_id,
+    generate_point_id,
+    sliding_window_chunk,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chunker Edge Cases
@@ -204,3 +210,228 @@ class TestDeterministicIDInvariants:
         for _ in range(10):
             assert generate_point_id("2026-08-24", 14, 2, "Understanding Tax Slabs Under the New Regime") == "66fed7897b8d8e1f613c4438b3fea042"
             assert generate_chunk_id("2026-08-24", 14, 2) == "chk_2026_08_24_p14_002"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watermark & Boilerplate Sanitization
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWatermarkSanitization:
+    def test_footer_removal(self) -> None:
+        text = "Some content.\n***This PDF download is allowed by Economic Times subscriber for personal use***\nMore content."
+        cleaned = clean_extracted_text(text)
+        assert "***This PDF download is allowed by Economic Times" not in cleaned
+        assert "Some content." in cleaned
+        assert "More content." in cleaned
+
+    def test_footer_case_insensitive(self) -> None:
+        text = "***THIS PDF DOWNLOAD IS ALLOWED BY ECONOMIC TIMES - DO NOT SHARE***"
+        assert "***" not in clean_extracted_text(text) or "Economic Times" not in clean_extracted_text(text)
+
+    def test_email_watermark_removal(self) -> None:
+        text = "Content here.\nContact subscriber john.doe@example.com for personal use\nMore text."
+        cleaned = clean_extracted_text(text)
+        assert "john.doe@example.com" not in cleaned
+        assert "Content here." in cleaned
+
+    def test_email_various_formats(self) -> None:
+        for email in [
+            "user+wealth@economic-times.com",
+            "test.user@etwealth.co.in",
+            "jane_smith123@domain.co.uk",
+        ]:
+            text = f"Watermark {email} should be removed."
+            assert email not in clean_extracted_text(text)
+
+    def test_banner_removal(self) -> None:
+        text = "www.etwealth.co | August 24-30, 2026 | ET Wealth\nActual article content."
+        cleaned = clean_extracted_text(text)
+        assert "www.etwealth.co" not in cleaned
+        assert "Actual article content." in cleaned
+
+    def test_banner_case_insensitive(self) -> None:
+        text = "WWW.ETWEALTH.CO | Health Section\nContent."
+        assert "ETWEALTH.CO" not in clean_extracted_text(text)
+
+    def test_multiple_watermarks_all_removed(self) -> None:
+        text = """www.etwealth.co | August 2026
+Content line 1.
+***This PDF download is allowed by Economic Times subscriber user@example.com***
+Content line 2.
+Contact editor@etwealth.co
+"""
+        cleaned = clean_extracted_text(text)
+        assert "www.etwealth.co" not in cleaned
+        assert "This PDF download is allowed" not in cleaned
+        assert "@" not in cleaned  # all emails removed
+        assert "Content line 1." in cleaned
+        assert "Content line 2." in cleaned
+
+    def test_clean_preserves_editorial_content(self) -> None:
+        text = "Important financial advice about tax slabs and mutual funds.\nThis is legitimate content."
+        cleaned = clean_extracted_text(text)
+        assert "Important financial advice" in cleaned
+        assert "legitimate content" in cleaned
+
+    def test_statutory_warning_dominated_filtered(self) -> None:
+        # Chunk dominated by statutory warning with no actionable content should be filtered
+        warning_only = "Mutual Fund investments are subject to market risks, read all scheme related documents carefully." * 5
+        chunks = sliding_window_chunk(warning_only, chunk_size=100, overlap=10, min_chars=120)
+        # All chunks are just warning boilerplate -> should be filtered to 0
+        assert len(chunks) == 0
+
+    def test_statutory_warning_with_editorial_kept(self) -> None:
+        editorial = "Tax planning for mutual funds requires understanding equity and debt allocation. " * 20
+        text = editorial + " Mutual Fund investments are subject to market risks, read all scheme related documents carefully."
+        chunks = sliding_window_chunk(text, chunk_size=100, overlap=10, min_chars=120)
+        assert len(chunks) >= 1
+        # At least one chunk should contain editorial content
+        assert any("Tax planning" in c for c in chunks)
+
+    def test_clean_empty_string(self) -> None:
+        assert clean_extracted_text("") == ""
+        assert clean_extracted_text("   \n\n  ") == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Table-Aware Chunking
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTableAwareChunking:
+    def test_small_table_atomic_preservation(self) -> None:
+        table = """| Age | Cover | Premium |
+|---|---|---|
+| 30 | 5 Lakh | Rs 5,200 |
+| 35 | 5 Lakh | Rs 6,100 |
+| 40 | 5 Lakh | Rs 8,300 |"""
+        prose = "Introduction text. " * 20
+        text = prose + "\n\n" + table + "\n\n" + prose
+        chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
+        # Table should remain intact as complete Markdown table within a single chunk
+        table_chunks = [c for c in chunks if "|" in c and "Age" in c]
+        assert len(table_chunks) >= 1
+        # Check that table chunk contains all rows (atomic)
+        table_chunk = table_chunks[0]
+        assert "| 30 | 5 Lakh | Rs 5,200 |" in table_chunk
+        assert "| 40 | 5 Lakh | Rs 8,300 |" in table_chunk
+        # Header should be present
+        assert "| Age | Cover | Premium |" in table_chunk
+
+    def test_table_not_split_across_boundaries(self) -> None:
+        # Table under 800 tokens should not be split arbitrarily
+        table = "| Col1 | Col2 | Col3 |\n|---|---|---|\n" + "\n".join([f"| A{i} | B{i} | C{i} |" for i in range(20)])
+        text = "Intro. " * 30 + "\n\n" + table + "\n\n" + "Outro. " * 30
+        chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
+        # Find table chunks
+        table_chunks = [c for c in chunks if "Col1" in c]
+        assert len(table_chunks) == 1  # atomic
+        # All 20 rows should be in same chunk
+        assert "| A19 | B19 | C19 |" in table_chunks[0]
+        assert "| A0 | B0 | C0 |" in table_chunks[0]
+
+    def test_oversized_table_split_with_header_repetition(self) -> None:
+        # Create oversized table (>800 tokens ~ >800 words)
+        header = "| Fund | 1Y | 3Y | 5Y |"
+        sep = "|---|---|---|---|"
+        rows = [f"| Fund {i} | {i}% | {i+1}% | {i+2}% |" for i in range(100)]
+        large_table = header + "\n" + sep + "\n" + "\n".join(rows)
+        # Wrap with prose to ensure table is isolated
+        text = "Intro. " * 10 + "\n\n" + large_table + "\n\n" + "Outro. " * 10
+        chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
+        table_chunks = [c for c in chunks if "Fund 0" in c or "Fund 50" in c or "Fund 99" in c]
+        # Oversized table should be split into multiple chunks
+        assert len(table_chunks) >= 2
+        # Each split chunk should repeat header
+        for tc in table_chunks:
+            assert header in tc
+            assert sep in tc
+        # All rows should be present across chunks
+        combined = "\n".join(table_chunks)
+        assert "| Fund 0 |" in combined
+        assert "| Fund 99 |" in combined
+
+    def test_section_prefix_added(self) -> None:
+        text = "# Cover Story: How much health insurance do you need?\n\nThis is content. " * 50
+        chunks = sliding_window_chunk(text, chunk_size=100, overlap=10, min_chars=120)
+        assert len(chunks) >= 1
+        # Each chunk should be prefixed with section title
+        assert all(c.startswith("[Section: Cover Story: How much health insurance do you need?]") for c in chunks)
+
+    def test_section_prefix_with_hash_variations(self) -> None:
+        for heading in ["# Title", "## Mutual Funds", "### Health Cover Premiums"]:
+            text = heading + "\n\nContent. " * 50
+            chunks = sliding_window_chunk(text, chunk_size=100, overlap=10, min_chars=120)
+            assert len(chunks) >= 1
+            expected_title = heading.lstrip("#").strip()
+            assert f"[Section: {expected_title}]" in chunks[0]
+
+    def test_table_with_section_prefix(self) -> None:
+        text = "## Mutual Funds\n\n| Bank | Rate |\n|---|---|\n| SBI | 6.8% |\n| HDFC | 7.0% |"
+        chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
+        assert len(chunks) >= 1
+        assert any("[Section: Mutual Funds]" in c and "|" in c for c in chunks)
+
+    def test_prose_without_heading_no_prefix(self) -> None:
+        text = "This is plain prose without heading. " * 50
+        chunks = sliding_window_chunk(text, chunk_size=100, overlap=10, min_chars=120)
+        assert len(chunks) >= 1
+        assert not any(c.startswith("[Section:") for c in chunks)
+
+    def test_table_integrity_preserved_markdown_pipes(self) -> None:
+        table = "| Age | Cover | Premium |\n|---|---|---|\n| 30 | 5 Lakh | Rs 5,200 |"
+        text = "Intro. " * 20 + "\n\n" + table + "\n\n" + "Outro. " * 20
+        chunks = sliding_window_chunk(text, chunk_size=600, overlap=100, min_chars=120)
+        # Find chunk containing table and verify pipe structure intact
+        table_chunk = next(c for c in chunks if "|" in c)
+        assert table_chunk.count("|") >= 6  # at least header + separator + row
+        assert "---|---|---" in table_chunk
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Date Parser (Magazine Masthead)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDateParser:
+    def test_august_24_30_2026(self) -> None:
+        assert extract_edition_date_from_text("August 24-30, 2026") == "2026-08-24"
+        assert extract_edition_date_from_text("www.etwealth.co | August 24-30, 2026 | ET Wealth") == "2026-08-24"
+
+    def test_aug_abbreviation(self) -> None:
+        assert extract_edition_date_from_text("Aug 24-30, 2026") == "2026-08-24"
+        assert extract_edition_date_from_text("Sept 5-11, 2025") == "2025-09-05"
+
+    def test_single_day(self) -> None:
+        assert extract_edition_date_from_text("August 24, 2026") == "2026-08-24"
+
+    def test_day_month_year_format(self) -> None:
+        assert extract_edition_date_from_text("24 August 2026") == "2026-08-24"
+
+    def test_month_year_fallback(self) -> None:
+        assert extract_edition_date_from_text("August 2026") == "2026-08-01"
+
+    def test_various_months(self) -> None:
+        assert extract_edition_date_from_text("January 1-7, 2025") == "2025-01-01"
+        assert extract_edition_date_from_text("December 15-21, 2024") == "2024-12-15"
+        assert extract_edition_date_from_text("February 2026") == "2026-02-01"
+
+    def test_no_date_returns_none(self) -> None:
+        assert extract_edition_date_from_text("This is random text without date") is None
+        assert extract_edition_date_from_text("") is None
+        assert extract_edition_date_from_text("www.etwealth.co | Health Section") is None
+
+    def test_first_page_header_extraction(self) -> None:
+        header = "ET Wealth\nAugust 24-30, 2026\nCover Story: How much health insurance do you need?"
+        assert extract_edition_date_from_text(header) == "2026-08-24"
+
+    def test_invalid_date_not_parsed(self) -> None:
+        # Invalid day should not crash, return None or handle gracefully
+        result = extract_edition_date_from_text("February 30, 2026")
+        # February 30 is invalid date, should return None
+        assert result is None
+
+    def test_mixed_case_month(self) -> None:
+        assert extract_edition_date_from_text("AUGUST 24-30, 2026") == "2026-08-24"
+        assert extract_edition_date_from_text("august 24, 2026") == "2026-08-24"

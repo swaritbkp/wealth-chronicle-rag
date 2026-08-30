@@ -1,6 +1,7 @@
 """
 ingest.py — Admin Ingestion Plane for WealthChronicle AI v1.0
 Covers TASK-3.1 through TASK-3.7
+Upgraded with watermark sanitization and table-aware chunking for Economic Times Wealth.
 """
 
 from __future__ import annotations
@@ -86,7 +87,293 @@ def extract_pages(pdf_path: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TASK-3.2: Punctuation-Aware Sliding Window Chunker
+# 1. PRE-PROCESSING & SANITIZATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FOOTER_PATTERN = re.compile(r"\*\*\*This PDF download is allowed by Economic Times.*", re.IGNORECASE)
+_EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+_BANNER_PATTERN = re.compile(r"www\.etwealth\.co\s*\|.*", re.IGNORECASE)
+_STATUTORY_WARNING_PHRASE = "Mutual Fund investments are subject to market risks"
+
+# Month mapping for date parser
+_MONTH_MAP = {
+    "january": "01",
+    "february": "02",
+    "march": "03",
+    "april": "04",
+    "may": "05",
+    "june": "06",
+    "july": "07",
+    "august": "08",
+    "september": "09",
+    "october": "10",
+    "november": "11",
+    "december": "12",
+    "jan": "01",
+    "feb": "02",
+    "mar": "03",
+    "apr": "04",
+    "jun": "06",
+    "jul": "07",
+    "aug": "08",
+    "sep": "09",
+    "sept": "09",
+    "oct": "10",
+    "nov": "11",
+    "dec": "12",
+}
+
+
+def clean_extracted_text(text: str) -> str:
+    """Sanitize extracted markdown text by stripping watermarks and boilerplate.
+
+    Removes:
+    - Footer lines matching ***This PDF download is allowed by Economic Times.*
+    - Email watermarks (subscriber emails)
+    - Running top banners www.etwealth.co | ...
+
+    Returns cleaned text with normalized whitespace.
+    """
+    if not text:
+        return text
+
+    # Remove footer lines (multiline)
+    lines = text.split("\n")
+    cleaned_lines: list[str] = []
+    for line in lines:
+        # Check footer pattern — if line matches, skip entire line
+        if _FOOTER_PATTERN.search(line):
+            continue
+        # Remove banner lines
+        if _BANNER_PATTERN.search(line):
+            # Remove the banner portion but keep rest of line if any editorial content
+            line = _BANNER_PATTERN.sub("", line)
+            if not line.strip():
+                continue
+        # Remove email watermarks
+        # We replace emails with empty, but if line becomes empty after, skip
+        if _EMAIL_PATTERN.search(line):
+            line = _EMAIL_PATTERN.sub("", line)
+            # Also remove common watermark surrounds like "subscriber user@... for personal use"
+            # Clean up leftover artifacts like "subscriber  for personal use"
+            line = re.sub(r"\s{2,}", " ", line).strip()
+            if not line.strip() or len(line.strip()) < 5:
+                continue
+            # If line after email removal is just boilerplate fragments, skip
+            if re.match(r"^\s*(subscriber|for personal use|not for redistribution)?\s*$", line, re.IGNORECASE):
+                continue
+        cleaned_lines.append(line)
+
+    # Rejoin and also run global email substitution for any inline emails missed
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = _EMAIL_PATTERN.sub("", cleaned)
+    # Collapse multiple blank lines
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    # Remove lines that are now just whitespace
+    cleaned = "\n".join([ln for ln in cleaned.split("\n") if ln.strip() or ln == ""])
+    # Normalize spaces but preserve markdown structure
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _is_statutory_warning_dominated(text: str) -> bool:
+    """Check if chunk is dominated by mutual fund statutory warning with no actionable content.
+
+    Returns True if chunk should be discarded. Keeps chunks that have editorial content
+    alongside the warning by checking remaining text after removing warning.
+    """
+    if _STATUTORY_WARNING_PHRASE not in text:
+        return False
+
+    stripped = text.strip()
+    lower = stripped.lower()
+
+    # Remove warning phrase and its common continuation to assess remaining content
+    remaining = lower.replace("mutual fund investments are subject to market risks", "")
+    remaining = re.sub(r"read all scheme related documents carefully[^.\n]*\.?", "", remaining)
+    remaining = remaining.strip()
+    # Remove prefix like [Section: ...] for assessment
+    remaining = re.sub(r"^\[section:[^\]]+\]\s*", "", remaining)
+
+    # If remaining after removing warning is substantial (>20 words and >120 chars), not dominated
+    remaining_words = len(remaining.split())
+    remaining_chars = len(remaining)
+
+    if remaining_words >= 20 and remaining_chars >= 120:
+        # Has actionable editorial content, keep it (warning is just incidental)
+        return False
+
+    # If chunk starts with warning and remaining is small, it's boilerplate
+    if lower.strip().startswith("mutual fund investments are subject to market risks"):
+        return True
+
+    # If warning appears multiple times and dominates short chunk
+    if lower.count("mutual fund investments are subject to market risks") >= 2 and len(stripped.split()) < 150:
+        return True
+
+    # If remaining is tiny, dominated
+    if remaining_words < 15 or remaining_chars < 100:
+        return True
+
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. TABLE-AWARE CHUNKING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_section_title(text: str) -> str | None:
+    """Extract top-level heading/section title from page markdown.
+
+    Looks for first markdown heading (#, ##, etc.) on the page.
+    Returns title without hash marks, or None if not found.
+    """
+    for line in text.split("\n"):
+        stripped = line.strip()
+        # Match markdown headings: # Title, ## Title, etc. up to ######
+        m = re.match(r"^\s*#{1,6}\s+(.+)$", stripped)
+        if m:
+            title = m.group(1).strip()
+            # Clean up markdown formatting inside heading
+            title = re.sub(r"\*\*(.+?)\*\*", r"\1", title)
+            title = re.sub(r"\*(.+?)\*", r"\1", title)
+            if title:
+                return title
+    return None
+
+
+def _split_table_blocks(text: str) -> list[tuple[str, str]]:
+    """Split page text into (type, block) where type is 'table' or 'prose'.
+
+    Tables are identified as consecutive lines containing '|' with pipe table syntax.
+    """
+    lines = text.split("\n")
+    blocks: list[tuple[str, str]] = []
+    cur_table: list[str] = []
+    cur_prose: list[str] = []
+
+    def flush_prose():
+        nonlocal cur_prose
+        if cur_prose:
+            prose_text = "\n".join(cur_prose).strip()
+            if prose_text:
+                blocks.append(("prose", prose_text))
+            cur_prose = []
+
+    def flush_table():
+        nonlocal cur_table
+        if cur_table:
+            table_text = "\n".join(cur_table).strip()
+            if table_text:
+                blocks.append(("table", table_text))
+            cur_table = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Detect markdown table line: contains '|' and has at least 2 pipes or table separator
+        is_table_line = ("|" in line) and (stripped.startswith("|") or " | " in line or stripped.count("|") >= 2)
+        # Also consider separator lines like |---|---| or |:---|
+        is_separator = bool(re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", line)) if is_table_line else False
+
+        if is_table_line or is_separator:
+            # If we were building prose, flush it
+            if cur_prose:
+                flush_prose()
+            cur_table.append(line)
+        else:
+            # Non-table line
+            if cur_table:
+                # If line is blank, it might be a blank separator between table rows (pymupdf4llm uses double newlines)
+                # Don't flush table on blank line alone; keep table open for next pipe row
+                if stripped == "":
+                    # Peek: if we are in table, ignore blank lines and keep table open
+                    continue
+                # Line is prose (non-empty non-table), so flush table first
+                flush_table()
+                if stripped:
+                    cur_prose.append(line)
+            else:
+                # Not in table; add to prose (including empty lines as separators)
+                cur_prose.append(line)
+
+    flush_table()
+    flush_prose()
+    return blocks
+
+
+def _chunk_table_atomic(table_text: str, prefix: str, max_tokens: int = 800) -> list[str]:
+    """Chunk a markdown table atomically or by rows with header repetition.
+
+    If table under max_tokens words, return single chunk.
+    For oversized tables, split by rows while repeating header row at top of each chunk.
+    """
+    # Check if table is small enough to keep atomic
+    words = table_text.split()
+    if len(words) < max_tokens:
+        # Single atomic chunk
+        chunk = f"{prefix}{table_text}" if prefix else table_text
+        return [chunk]
+
+    # Oversized: split by rows
+    rows = [r for r in table_text.strip().split("\n") if r.strip()]
+    if not rows:
+        return []
+
+    # Identify header and separator
+    header = rows[0]
+    separator = None
+    data_start_idx = 1
+    if len(rows) > 1 and re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", rows[1]):
+        separator = rows[1]
+        data_start_idx = 2
+
+    data_rows = rows[data_start_idx:]
+    if not data_rows:
+        # Only header, return atomic
+        chunk = f"{prefix}{table_text}" if prefix else table_text
+        return [chunk]
+
+    chunks: list[str] = []
+    current_rows: list[str] = []
+    current_word_count = 0
+    header_words = len(header.split()) + (len(separator.split()) if separator else 0)
+
+    for row in data_rows:
+        row_words = len(row.split())
+        # If adding this row would exceed max_tokens, flush current chunk
+        if current_rows and (current_word_count + row_words + header_words) >= max_tokens:
+            # Build chunk with header repetition
+            chunk_lines = [header]
+            if separator:
+                chunk_lines.append(separator)
+            chunk_lines.extend(current_rows)
+            chunk_text = "\n".join(chunk_lines)
+            if prefix:
+                chunk_text = f"{prefix}{chunk_text}"
+            chunks.append(chunk_text)
+            current_rows = []
+            current_word_count = 0
+
+        current_rows.append(row)
+        current_word_count += row_words
+
+    # Flush remaining
+    if current_rows:
+        chunk_lines = [header]
+        if separator:
+            chunk_lines.append(separator)
+        chunk_lines.extend(current_rows)
+        chunk_text = "\n".join(chunk_lines)
+        if prefix:
+            chunk_text = f"{prefix}{chunk_text}"
+        chunks.append(chunk_text)
+
+    return chunks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASK-3.2: Punctuation-Aware Sliding Window Chunker (Upgraded Table-Aware)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SENTENCE_END = re.compile(r"[.!?;]\s")
@@ -99,14 +386,14 @@ def sliding_window_chunk(
     overlap: int = 100,
     min_chars: int = 120,
 ) -> list[str]:
-    """Sliding window chunker with punctuation-aware boundary snapping.
+    """Sliding window chunker with punctuation-aware boundary snapping, table-aware isolation, and section prefixing.
 
     Algorithm:
-        1. Split text into words.
-        2. Advance by (chunk_size - overlap) words per step.
-        3. For each chunk boundary, search backward up to 30 words
-           for a sentence-ending punctuation mark and snap to it.
-        4. Discard chunks below min_chars or matching noise patterns.
+        1. Extract section title and create prefix.
+        2. Split text into table vs prose blocks.
+        3. For table blocks: keep atomic if <800 tokens, else split by rows with header repetition.
+        4. For prose blocks: apply existing sliding window with sentence snapping.
+        5. Prefix each chunk with [Section: Title] if title exists.
 
     Args:
         text: Full page Markdown text.
@@ -117,6 +404,60 @@ def sliding_window_chunk(
     Returns:
         List of clean chunk strings.
     """
+    if not text or not text.strip():
+        return []
+
+    # Extract section title for context preservation
+    section_title = _extract_section_title(text)
+    prefix = f"[Section: {section_title}]\n" if section_title else ""
+
+    # Split into table vs prose blocks
+    blocks = _split_table_blocks(text)
+
+    # If no table blocks detected, fall back to original prose-only logic but with prefix handling
+    # Check if any block is table
+    has_table = any(btype == "table" for btype, _ in blocks)
+    if not has_table:
+        # Original sliding window logic on full text (but we should avoid double-prefixing heading line itself)
+        # Remove heading line from text for chunking to avoid duplication, but prefix will preserve context
+        # For simplicity, apply original logic to the whole text
+        return _sliding_window_prose(text, prefix, chunk_size, overlap, min_chars)
+
+    # Table-aware: process each block separately
+    chunks: list[str] = []
+    for btype, block_text in blocks:
+        if not block_text.strip():
+            continue
+        if btype == "table":
+            # Table-aware atomic or row-split chunking — keep atomic even if small (tables are high-value)
+            table_chunks = _chunk_table_atomic(block_text, prefix, max_tokens=800)
+            for tc in table_chunks:
+                # Tables use lower threshold (20 chars) and bypass strict min_chars, but still filter noise/warning
+                if len(tc.strip()) >= 20 and not tc.lower().strip().startswith(_NOISE_PREFIXES):
+                    if _is_statutory_warning_dominated(tc):
+                        continue
+                    chunks.append(tc)
+        else:  # prose
+            # Skip heading-only blocks that are just section titles (already captured in prefix)
+            # Check if block is heading-only (all non-empty lines start with #) and small (<30 words)
+            lines = [ln for ln in block_text.split("\n") if ln.strip()]
+            is_heading_only = lines and all(ln.strip().startswith("#") for ln in lines) and len(block_text.split()) < 30
+            if is_heading_only:
+                continue
+            prose_chunks = _sliding_window_prose(block_text, prefix, chunk_size, overlap, min_chars)
+            chunks.extend(prose_chunks)
+
+    return chunks
+
+
+def _sliding_window_prose(
+    text: str,
+    prefix: str,
+    chunk_size: int = 600,
+    overlap: int = 100,
+    min_chars: int = 120,
+) -> list[str]:
+    """Original sliding window logic applied to prose block with prefix."""
     words: list[str] = text.split()
     total_words: int = len(words)
     chunks: list[str] = []
@@ -141,9 +482,17 @@ def sliding_window_chunk(
                 chunk_words = candidate.split()
 
         chunk_text: str = " ".join(chunk_words)
+        # Prefix with section title for context preservation
+        if prefix:
+            # Avoid double prefix if chunk already starts with prefix
+            if not chunk_text.startswith("[Section:"):
+                chunk_text = f"{prefix}{chunk_text}"
 
-        # --- Noise filter (FR-ING-03) ---
+        # --- Noise filter (FR-ING-03) + statutory warning ---
         if len(chunk_text) >= min_chars and not chunk_text.lower().startswith(_NOISE_PREFIXES):
+            if _is_statutory_warning_dominated(chunk_text):
+                i += stride
+                continue
             chunks.append(chunk_text)
 
         i += stride
@@ -213,6 +562,86 @@ def generate_chunk_id(edition_date: str, page_number: int, chunk_index: int) -> 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 3. DATE EXTRACTION HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def extract_edition_date_from_text(text: str) -> str | None:
+    """Auto-detect edition date from PDF first page header masthead.
+
+    Supports formats like:
+    - August 24-30, 2026 -> 2026-08-24
+    - Aug 24-30, 2026 -> 2026-08-24
+    - August 24, 2026 -> 2026-08-24
+    - August 2026 -> 2026-08-01 (fallback to first of month)
+    - 24 August 2026 -> 2026-08-24
+
+    Returns YYYY-MM-DD string for start date, or None if not found.
+    """
+    if not text:
+        return None
+
+    # Normalize whitespace
+    text = text[:2000]  # Only first 2000 chars of first page for masthead
+
+    # Pattern 1: Month Day-Day, Year  e.g., August 24-30, 2026
+    pattern1 = re.compile(
+        r"\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})(?:\s*-\s*\d{1,2})?,?\s+(\d{4})",
+        re.IGNORECASE,
+    )
+    m = pattern1.search(text)
+    if m:
+        month_str = m.group(1).lower()
+        day = m.group(2)
+        year = m.group(3)
+        month_num = _MONTH_MAP.get(month_str[:3] if len(month_str) > 3 else month_str, None)
+        # Handle full month vs abbreviation: lookup first 3 chars lower
+        if not month_num:
+            # Try full name
+            month_num = _MONTH_MAP.get(month_str, None)
+        if month_num:
+            try:
+                # Validate date
+                datetime(int(year), int(month_num), int(day))
+                return f"{year}-{month_num}-{int(day):02d}"
+            except ValueError:
+                pass
+
+    # Pattern 2: Day Month Year e.g., 24 August 2026
+    pattern2 = re.compile(
+        r"\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{4})",
+        re.IGNORECASE,
+    )
+    m2 = pattern2.search(text)
+    if m2:
+        day = m2.group(1)
+        month_str = m2.group(2).lower()
+        year = m2.group(3)
+        month_num = _MONTH_MAP.get(month_str[:3], _MONTH_MAP.get(month_str, None))
+        if month_num:
+            try:
+                datetime(int(year), int(month_num), int(day))
+                return f"{year}-{month_num}-{int(day):02d}"
+            except ValueError:
+                pass
+
+    # Pattern 3: Month Year e.g., August 2026 (fallback to 01)
+    pattern3 = re.compile(
+        r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})",
+        re.IGNORECASE,
+    )
+    m3 = pattern3.search(text)
+    if m3:
+        month_str = m3.group(1).lower()
+        year = m3.group(2)
+        month_num = _MONTH_MAP.get(month_str, None)
+        if month_num:
+            return f"{year}-{month_num}-01"
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TASK-3.5: Qdrant Collection Initialization with HNSW Config & Payload Indexes
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -271,33 +700,66 @@ def ensure_payload_indexes(client: QdrantClient, collection_name: str = COLLECTI
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TASK-3.6: Batch Embed & Upsert Pipeline
+# TASK-3.6: Batch Embed & Upsert Pipeline (Upgraded with cleaning)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def ingest_pdf(pdf_path: str, edition_date: str, client: QdrantClient | None = None) -> int:
+def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantClient | None = None) -> int:
     """Full ingestion pipeline for a single PDF.
 
     Steps:
         1. Call extract_pages(pdf_path)
-        2. Call validate_extraction(pages, pdf_path)
-        3. For each page: call sliding_window_chunk(text)
-        4. Convert 0-indexed to 1-indexed page numbers.
-        5. Generate chunk_id and point_id for each chunk.
-        6. Construct ChunkPayload Pydantic objects
-        7. Embed all texts using TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        8. Build PointStruct list with vector + payload dict
-        9. Call client.upsert with @with_qdrant_retry
+        2. Clean extracted text via clean_extracted_text() (watermark sanitization)
+        3. Call validate_extraction(pages, pdf_path)
+        4. For each page: call sliding_window_chunk(text) (table-aware)
+        5. Convert 0-indexed to 1-indexed page numbers.
+        6. Generate chunk_id and point_id for each chunk.
+        7. Construct ChunkPayload Pydantic objects
+        8. Embed all texts using TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        9. Build PointStruct list with vector + payload dict
+        10. Call client.upsert with @with_qdrant_retry
+
+    Args:
+        pdf_path: Path to PDF file
+        edition_date: Edition date YYYY-MM-DD. If None, auto-detected from PDF first page header.
+        client: Optional QdrantClient for testing (in-memory).
 
     Returns:
         Number of chunks ingested.
     """
     import os
 
+    # Auto-detect edition_date if not provided
+    if edition_date is None:
+        try:
+            # Extract first page text for date parsing
+            preview_pages = extract_pages(pdf_path)
+            if preview_pages:
+                first_page_text = preview_pages[0].get("text", "")
+                detected = extract_edition_date_from_text(first_page_text)
+                if detected:
+                    edition_date = detected
+                    print(f"[INFO] Auto-detected edition date: {edition_date}")
+                else:
+                    # Fallback try filename pattern YYYY-MM-DD
+                    fname = Path(pdf_path).stem
+                    m = re.search(r"(\d{4}-\d{2}-\d{2})", fname)
+                    if m:
+                        edition_date = m.group(1)
+                        print(f"[INFO] Inferred edition date from filename: {edition_date}")
+                    else:
+                        raise ValueError("Could not auto-detect edition date from PDF header or filename. Please provide YYYY-MM-DD explicitly.")
+            else:
+                raise ValueError("Could not extract pages for date detection")
+        except Exception as e:
+            raise ValueError(f"Failed to auto-detect edition date: {e}")
+
     # Validate edition_date format
     try:
         datetime.strptime(edition_date, "%Y-%m-%d")
     except ValueError:
+        raise ValueError(f"Invalid edition_date format: {edition_date}. Expected YYYY-MM-DD")
+    except TypeError:
         raise ValueError(f"Invalid edition_date format: {edition_date}. Expected YYYY-MM-DD")
 
     # Get Qdrant client if not provided
@@ -312,6 +774,12 @@ def ingest_pdf(pdf_path: str, edition_date: str, client: QdrantClient | None = N
 
     # 1. Extract pages
     pages = extract_pages(pdf_path)
+
+    # 1b. Clean extracted text immediately after extract_pages (watermark sanitization)
+    for p in pages:
+        original = p.get("text", "")
+        cleaned = clean_extracted_text(original)
+        p["text"] = cleaned
 
     # 2. Validate extraction
     validate_extraction(pages, pdf_path)
@@ -392,34 +860,37 @@ def ingest_pdf(pdf_path: str, edition_date: str, client: QdrantClient | None = N
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TASK-3.7: CLI Entry Point & Batch Ingestion Runner
+# TASK-3.7: CLI Entry Point & Batch Ingestion Runner (Upgraded with optional date)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def _print_usage():
-    print("Usage: python ingest.py <path_to_pdf> <YYYY-MM-DD>")
+    print("Usage: python ingest.py <path_to_pdf> [YYYY-MM-DD]")
     print("  <path_to_pdf>  Path to the PDF file to ingest")
-    print("  <YYYY-MM-DD>   Edition date (e.g., 2026-08-24)")
+    print("  <YYYY-MM-DD>   Edition date (e.g., 2026-08-24) - optional, auto-detected from PDF header if omitted")
     print()
     print("Batch ingestion:")
     print("  For batch processing, run:")
     print('    for f in data/*.pdf; do python ingest.py "$f" "2025-01-01"; done')
+    print("  Or with auto-detection:")
+    print('    for f in data/*.pdf; do python ingest.py "$f"; done')
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         _print_usage()
         sys.exit(1)
 
     pdf_path = sys.argv[1]
-    edition_date = sys.argv[2]
+    edition_date = sys.argv[2] if len(sys.argv) >= 3 else None
 
-    # Validate date format
-    try:
-        datetime.strptime(edition_date, "%Y-%m-%d")
-    except ValueError:
-        print(f"Error: Invalid date format '{edition_date}'. Expected YYYY-MM-DD (e.g., 2026-08-24)")
-        sys.exit(1)
+    # Validate date format if provided
+    if edition_date is not None:
+        try:
+            datetime.strptime(edition_date, "%Y-%m-%d")
+        except ValueError:
+            print(f"Error: Invalid date format '{edition_date}'. Expected YYYY-MM-DD (e.g., 2026-08-24)")
+            sys.exit(1)
 
     # Validate PDF path
     if not Path(pdf_path).exists():
