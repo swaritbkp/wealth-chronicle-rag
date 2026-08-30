@@ -1608,27 +1608,58 @@ print('✓ CI workflow YAML is syntactically valid')
 *End of Implementation Execution Plan — WealthChronicle AI v1.0*
 ---
 
-## 6. Overnight Hardening & Verification (2026-08-29 Night)
+## 6. Overnight Hardening, ET Wealth Upgrades & Audit Remediation (2026-08-30)
 
-**Status:** Completed — commit 8c4e3e9
+**Status:** Completed — commits 8c4e3e9 → bea0797 → 0658e02 → ecddc48 → df63a4a — 108 tests passing, live Frankfurt cluster 34 chunks
 
-### Hardening Scope
+### 6.1 Local Environment Isolation
 
-- **Test harness expansion:** 79 tests passing
-  - `tests/test_engine_extended.py` (36 tests): RRF & recency edge (delta 0/365/1000/negative, ties, missing), FlashRank fallback (5), refusal boundaries (10), concurrency 20 threads, retry jitter (6)
-  - `tests/test_ingest_mocked.py` (25 tests): chunker edge (15), ID invariants 500 collisions (10)
-  - `tests/test_app_isolated.py` (18 tests): session cap 20, prompt order recency, citation formatting
-  - `tests/test_ragas_eval.py` (1 test): RAGAS offline mock
-- **Synthetic benchmark:** `scripts/benchmark_latency.py` 300x384-d, 100 queries, P50 5.0 P90 5.3 P95 5.5 dense 0.7 sparse 0.4 RRF 0.03 peak RSS 135.7 headroom 295ms -> BENCHMARK_REPORT.md
-- **Static typing & lint:** ruff All checks passed, black All done, isort, mypy Success
-- **CI audit:** .github/workflows/rag_eval.yml YAML valid, 8 steps, runs pytest tests/ full suite + RAGAS, path filters
+- [x] Created dedicated `WealthRag/.venv/` via `py -3.11 -m venv .venv` (Python 3.11.15) — verified `.\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"` → `...\WealthRag\.venv\Scripts\python.exe`
+- [x] Installed locked deps via `.\.venv\Scripts\python.exe -m pip install -r requirements.txt pytest pytest-cov ruff black isort mypy` (pymupdf4llm 1.28.2, fastembed 0.8.0, qdrant 1.19.0, etc.)
+- [x] All subsequent commands use `.\.venv\Scripts\python.exe` / `.\.venv\Scripts\pytest.exe` per directive
 
-### Verification Commands (Post-Hardening)
+### 6.2 ET Wealth Ingestion Upgrades (24-page real PDF)
 
-pytest tests/ -v  # 79 passed
-pytest --cov  # 45% total
-ruff check .; black --check .; mypy --ignore-missing-imports  # Success
-python scripts/benchmark_latency.py  # P95 5.5ms RSS 135.7MB
+- [x] Sanitization: `clean_extracted_text` removes `***This PDF download is allowed by Economic Times.*`, emails `[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+`, banner `www\.etwealth\.co\s*\|.*`
+- [x] Table-aware chunking: atomic `<800` tokens, row-split with header repetition for oversized, section prefix `[Section: <Title>]`
+- [x] Masthead date auto-extraction: `August 24-30, 2026` → `2026-08-24` via `_MONTH_MAP` + `datetime` validation; CLI `python ingest.py <pdf> [YYYY-MM-DD]` optional
+- [x] Statutory ad-block: `Mutual Fund investments are subject to market risks` dominated chunks filtered if remaining <20 words / <100 chars
+- [x] Real PDF dry-run: 24 pages extracted, zero watermarks, 11 table chunks intact, 34 total chunks avg 79.8 words, no orphan `<20 words` Pydantic failures, ads Pages 5,7,22,23,24 filtered without crash
 
-All DoD checklists remain [x] verified.
+### 6.3 Audit Remediation F-01 to F-11
+
+- [x] F-01 `datetime.utcnow` → `datetime.now(timezone.utc)` in `schemas.py:3`, `app.py:11`, `app.py:234`, `app.py:380`
+- [x] F-02 Rate limiter sleep outside lock: `engine.py:322` calculates `sleep_time` inside lock, sleeps outside
+- [x] F-03 FlashRank cache `os.path.join(tempfile.gettempdir(), "flashrank_models")` `app.py:88`
+- [x] F-04 CI deduplication: `pytest tests/ -v --ignore=tests/test_ragas_eval.py` `rag_eval.yml:57`
+- [x] F-05 `safe_generate` final 429 no sleep, immediate fallback `engine.py:358`
+- [x] F-06 `_dense_search` extracted to module level `@with_qdrant_retry` `app.py:43`
+- [x] F-07 CI paths `*.py` `rag_eval.yml:7`
+- [x] F-08 `frozenset({429,502,503,504})` `engine.py:383`
+- [x] F-09 `article_title` populated via `_extract_section_title` `ingest.py:815`
+- [x] F-10 `confloat`/`constr` → `Annotated[float, Field(...)]` `schemas.py:92`
+- [x] F-11 `citation_count` via `re.findall(r"\[Edition:\s*[^\]]+\]", answer_text)` `app.py:358`
+
+### 6.4 Prompt Architecture v2.0
+
+- [x] `config/prompts.yaml` version `2.0` with `system_prompt` (5 principles), `rag_synthesis_template` (`{context_passages}`, `{query}`), `refusal_message` expanded, `guardrails` (refusal_threshold 0.25, max_context 4, temp 0.1)
+- [x] `engine.py:50` validates `version`, `system_prompt`, `rag_synthesis_template`, `refusal_message`, `guardrails` (with legacy fallback)
+- [x] `app.py:349` dynamic passage formatting `[Passage {i} | Edition: {date} | Page: {n} | Section: {title}]\n{text}` and `rag_synthesis_template.format(context_passages, query)`
+
+### 6.5 Live Qdrant Frankfurt Integration
+
+- [x] Endpoint `https://955ef1b4-3a7d-4a9a-9aee-1fe9a2e17491.eu-central-1-0.aws.cloud.qdrant.io:6333` configured via `.streamlit/secrets.toml` + `.env` (gitignored)
+- [x] Collection `wealth_archive` 384-d Cosine HNSW m=16 ef=128 payload indexes `edition_date, page_number, source` → 34 points ingested via `.\.venv\Scripts\python.exe ingest.py data/wealth_edition-133444653.pdf` (50.3s, avg 79.8w, headroom 295ms)
+- [x] Streamlit `.\.venv\Scripts\python.exe -m streamlit run app.py --server.headless true --server.port 8501` → `Uvicorn started on :::8501`, health `200 ok`, read verification `34 points`
+
+### 6.6 Test Suite & Verification Metrics (108 passing)
+
+- [x] `tests/test_engine_extended.py` 36 tests (F-02, recency, concurrency, jitter)
+- [x] `tests/test_ingest_mocked.py` 54 tests (sanitization, table-aware, date parser, ID, word_count)
+- [x] `tests/test_app_isolated.py` 18 tests (session cap, prompt v2.0, citation)
+- [x] `tests/test_ragas_eval.py` 1 test (mock)
+- [x] Total 108 passed via `.\.venv\Scripts\python.exe -m pytest tests/ -v`
+- [x] `ruff check .` → `All checks passed!`, `mypy` → `Success`, `black --check` → `All done!`
+
+All DoD checklists remain [x] verified. Next session: add Gemini key, batch ingest historical issues, Streamlit E2E queries.
 

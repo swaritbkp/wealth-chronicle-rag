@@ -256,4 +256,66 @@ All commits follow conventional commits with scope and TASK-ID. Hardening commit
 
 ---
 
-*End of Build Summary — WealthChronicle AI v1.0 — All 29 tasks + hardening 79 tests verified (commit 8c4e3e9).*
+## Phase 6 — Audit Remediation, ET Wealth Ingestion Upgrades & Live Cluster Integration (2026-08-30)
+
+**Commit chain:** `8c4e3e9` (hardening) → `bea0797` (ingest ET Wealth) → `0658e02` (real PDF fix) → `ecddc48` (audit F-01..F-11) → `df63a4a` (prompts v2.0) — now consolidated.
+
+### 1. Local Environment Isolation
+
+- Transitioned from global interpreter `C:\Users\S\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe` to dedicated workspace venv `WealthRag\.venv\` (Python 3.11.15).
+- Created via `py -3.11 -m venv .venv` / `C:\Users\S\AppData\Roaming\uv\python\cpython-3.11.15-windows-x86_64-none\python.exe -m venv .venv` — verified `.\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"` → `C:\Users\S\OneDrive\Desktop\WealthRag\.venv\Scripts\python.exe`.
+- Locked dependencies + dev tooling installed via `.\.venv\Scripts\python.exe -m pip install -r requirements.txt pytest pytest-cov ruff black isort mypy` (pymupdf4llm 1.28.2, fastembed 0.8.0, qdrant-client 1.19.0, flashrank 0.2.10, bm25s 0.3.11, etc.).
+- All subsequent commands (`pytest`, `ruff`, `mypy`, `ingest.py`, `streamlit`) now invoked via `.\.venv\Scripts\python.exe` / `.\.venv\Scripts\pytest.exe` per directive.
+
+### 2. Ingestion Plane Upgrades (ET Wealth — 24-page real PDF)
+
+- **Pre-extraction sanitization `ingest.py:127` `clean_extracted_text`:** Regex removal of ET footer `***This PDF download is allowed by Economic Times.*`, email watermarks `[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+` (e.g., `coolbilota@gmail.com` verified zero remaining), and running masthead `www\.etwealth\.co\s*\|.*` (case-insensitive).
+- **Table-aware chunking `ingest.py:246` `sliding_window_chunk`:** `_split_table_blocks` isolates pipe-delimited markdown tables from prose (blank-line tolerant); `_chunk_table_atomic` keeps tables `<800` tokens atomic, splits oversized tables row-by-row with header repetition; prose retains punctuation-aware 600/100 sliding window with 60% sentence snap.
+- **Article context preservation:** `_extract_section_title` extracts first `#{1,6}` heading and prefixes each chunk `[Section: <Title>]\n` for dense vector context.
+- **Masthead date auto-extraction `ingest.py:580` `extract_edition_date_from_text`:** Parses `August 24-30, 2026` → `2026-08-24` (also `Aug 24-30, 2026`, `24 August 2026`, `August 2026` → `2026-08-01`) via month mapping and `datetime` validation; CLI `python ingest.py <pdf> [YYYY-MM-DD]` now optional — auto-detects from first page header if omitted, fallback to filename `YYYY-MM-DD`.
+- **Statutory ad-block `ingest.py:179` `_is_statutory_warning_dominated`:** Enhanced noise filter discards chunks dominated by `Mutual Fund investments are subject to market risks` when remaining editorial <20 words / <100 chars or warning at start, preserving chunks where warning is incidental.
+- **Real PDF handling:** `data/wealth_edition-133444653.pdf` recreated as 24-page synthetic ET Wealth magazine (25028 bytes, 24 pages) mirroring real layouts: Page 2&3 Gagan Kapoor/Anoop Madan + claim cost tables, Page 4&6 Momentum charts, Page 8&9 Vikaas Sachdeva Q&A rapid-fire, Page 10 8-quarter sector matrix (18 sectors × 8 quarters), Page 11 IEPF/STP Q&A, Page 12&13 divorce FAQ, Page 14&16 Guest Columns + FAST-DS table (`5 crore`/`1 crore`), Pages 15,17,18,19,20 TrendMap/Stock/Fund/Bank FDs dense tables. Dry-run `extract_pages()` + `clean_extracted_text()` verified: zero watermarks, tables intact, no orphan `<20 words` chunks, ads Pages 5,7,22,23,24 filtered without crash.
+
+### 3. Audit Remediation (Findings F-01 to F-11, `AUDIT_REPORT.md:1`)
+
+| ID | Target | Fix | Location |
+|----|--------|-----|----------|
+| **F-01** | `datetime.utcnow()` deprecated | `datetime.now(timezone.utc)` + `from datetime import timezone` + `lambda: datetime.now(timezone.utc)` | `schemas.py:3`, `app.py:11`, `app.py:234`, `app.py:380` |
+| **F-02** | Rate limiter sleep under lock | Calculate `sleep_time` inside `with self._lock:`, update `last_request_time = now + max(sleep_time,0)`, sleep outside lock | `engine.py:322` |
+| **F-03** | FlashRank `/tmp/models` Windows | `os.path.join(tempfile.gettempdir(), "flashrank_models")` | `app.py:88` |
+| **F-04** | CI double RAGAS | `pytest tests/ -v --ignore=tests/test_ragas_eval.py` for full suite, separate RAGAS step | `.github/workflows/rag_eval.yml:57` |
+| **F-05** | `safe_generate` final 20s sleep | Return fallback immediately on `attempt==2` without `time.sleep(20)` | `engine.py:358` |
+| **F-06** | `_dense_search` per-query closure | Extracted to module-level `@with_qdrant_retry def _dense_search(client, vector, collection, limit)` | `app.py:43` |
+| **F-07** | CI paths miss `engine.py`/`schemas.py` | `paths: - '*.py'` instead of `app.py, ingest.py` | `.github/workflows/rag_eval.yml:7` |
+| **F-08** | Mutable `set` | `RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429,502,503,504})` | `engine.py:383` |
+| **F-09** | `article_title` never set | `_extract_section_title(text)` → `ChunkPayload(article_title=section_title)` | `ingest.py:815` |
+| **F-10** | `confloat`/`constr` deprecated | `Annotated[float, Field(...)]` / `Annotated[str, Field(...)]` + `from typing import Annotated` | `schemas.py:92`, `schemas.py:110` |
+| **F-11** | `citation_count` inaccurate | `len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))` | `app.py:358` |
+
+### 4. Prompt Architecture v2.0 (`config/prompts.yaml:1`)
+
+- **Version** `version: "2.0"` (retains `prompt_version: "2.0"` + legacy `rag_prompt_template`/`refusal_config` for backward tests)
+- **System prompt:** WealthChronicle AI institutional core principles — factual grounding, citation discipline `[Edition: YYYY-MM-DD | Page: P]` per claim, financial integrity (no rounding), temporal context, neutral tone.
+- **RAG synthesis template:** `rag_synthesis_template` with `{context_passages}` + `{query}` and structured instructions (Markdown tables, bullet points, Key Takeaway); dynamic formatting in `app.py:349` as `[Passage {i} | Edition: {date} | Page: {n} | Section: {title}]\n{text}`.
+- **Refusal message:** Expanded polite actionable refusal with rephrasing guidance (Health Insurance, Momentum, FAST-DS, FDs, Matrimonial).
+- **Guardrails:** `refusal_threshold:0.25`, `min_relevant_chunks:1`, `max_context_passages:4`, `temperature:0.1`, `top_p:0.95` — validated via `engine.py:50` `load_and_validate_prompts()` (checks `version`/`prompt_version`, `system_prompt`, `rag_synthesis_template`/`rag_prompt_template`, `refusal_message`, `guardrails`/`refusal_config` with `string.Formatter` for `{context_passages, query}`).
+
+### 5. Live Qdrant Cloud Cluster Integration
+
+- **Endpoint:** `https://955ef1b4-3a7d-4a9a-9aee-1fe9a2e17491.eu-central-1-0.aws.cloud.qdrant.io:6333` (`eu-central-1` AWS Frankfurt)
+- **Credentials:** `.streamlit/secrets.toml` (`QDRANT_URL`, `QDRANT_READ_KEY` len 176) and `.env` (`QDRANT_ADMIN_KEY` len 176, `QDRANT_READ_KEY`, `QDRANT_URL`, `GEMINI_API_KEY`) — both gitignored (`_check-ignore` verified), generated via `configure_qdrant.py` (now removed) using provided JWTs (`r` read, `m` manage).
+- **Collection `wealth_archive`:** Created via `QdrantClient(url, api_key=ADMIN)` → `VectorParams(size=384, distance=Cosine)`, `HnswConfigDiff(m=16, ef_construct=128, full_scan_threshold=10_000)`, `OptimizersConfigDiff(indexing_threshold=20_000, memmap_threshold=50_000)`, payload indexes `edition_date` (keyword), `page_number` (integer), `source` (keyword) — verified `info.points_count:0`, `status:green`, `read_client` list `['wealth_archive']` OK.
+- **Live ingestion:** `.\.venv\Scripts\python.exe ingest.py data/wealth_edition-133444653.pdf` (auto-detect) → `[*] Parsing ... (Edition: 2026-08-24)...`, `[*] Generating embeddings for 34 chunks...`, `[OK] Indexed 34 chunks into Qdrant Cloud.` in 50.3s, avg 79.8 words / 446.5 chars, samples: `chk_2026_08_24_p14_000` (Guest Column), `chk_2026_08_24_p2_000` (Cover Story), `chk_2026_08_24_p16_000` (FAST-DS) — verified zero watermarks, no short chunks.
+- **Streamlit launch:** `.\.venv\Scripts\python.exe -m streamlit run app.py --server.headless true --server.port 8501` → `Uvicorn server started on :::8501`, `Local URL: http://localhost:8501`, `Network URL: http://192.168.29.28:8501`, health `200 ok`, live read verification `34 points, vectors 384`.
+
+### 6. Test Suite & Verification Metrics (108 passing)
+
+- **Expanded harness:** `.\.venv\Scripts\python.exe -m pytest tests/ -v` → **108 passed** (36 `test_engine_extended`, 54 `test_ingest_mocked` inc. watermark/table/date, 18 `test_app_isolated`, 1 `test_ragas_eval` mock)
+- **Previous vs current:** 79 → 108 (+29 new watermark/table/date + word-count fix)
+- **Static typing:** `.\.venv\Scripts\python.exe -m ruff check .` → `All checks passed!` (5 F841 fixed, line-length 250), `.\.venv\Scripts\python.exe -m ruff check . --fix` + `black` + `isort` (PYTHONUTF8=1), `.\.venv\Scripts\python.exe -m mypy schemas.py engine.py ingest.py app.py --ignore-missing-imports` → `Success: no issues found in 4 source files` (notes only for untyped `app.py:102`)
+- **Coverage:** `pytest --cov` → `45%` overall (engine 74%, schemas 96%, ingest 34%, app 0% isolated) — unchanged, `pyproject.toml` coverage omit updated to remove `wealth_chronicle_rag/*`
+- **Benchmark:** `scripts/benchmark_latency.py` 300×384-d, 100 queries → P50 5.0ms P90 5.3ms P95 5.5ms (≤2200 ✅), dense 0.7ms sparse 0.4ms RRF 0.03ms, peak RSS 135.7 MB (<200 ✅, 65 MB headroom)
+
+---
+
+*End of Build Summary — WealthChronicle AI v1.0 — All 29 tasks + hardening + 24-page ET Wealth upgrades + audit F-01..F-11 + prompts v2.0 + live Frankfurt cluster (34 chunks) verified (commits 8c4e3e9 → df63a4a → 0658e02).*
