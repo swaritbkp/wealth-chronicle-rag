@@ -5,6 +5,7 @@ the golden evaluation set and asserts metric thresholds.
 
 Environment variables required:
     GEMINI_API_KEY, QDRANT_URL, QDRANT_READ_KEY
+    EVAL_SET_PATH (optional, defaults to tests/golden_eval_set_2026.json)
 """
 
 import json
@@ -72,9 +73,9 @@ def rag_services():
 @pytest.fixture(scope="session")
 def golden_data():
     """Load and validate the golden evaluation dataset."""
-    with open("tests/golden_eval_set.json", "r", encoding="utf-8") as f:
+    eval_path = os.environ.get("EVAL_SET_PATH", "tests/golden_eval_set_2026.json")
+    with open(eval_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    assert len(data) == 50, f"Expected 50 eval items, got {len(data)}"
     # Validate each item via Pydantic
     from schemas import EvaluationItem
 

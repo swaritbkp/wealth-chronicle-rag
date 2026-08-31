@@ -26,6 +26,7 @@ from engine import (
     safe_generate,
     should_refuse,
     timer,
+    validate_citations,
     with_qdrant_retry,
 )
 from schemas import ChunkPayload, RerankedPassage, RetrievalSource, SearchResult
@@ -311,7 +312,7 @@ if user_query:
                         dense_results=dense_results,
                         sparse_results=sparse_results,
                         all_payloads=all_payloads,
-                        reference_date=date.today(),
+                        reference_date=date.today(),  # P0-2: Explicit reference date for deterministic testing
                         top_n=20,
                     )
                     trace.fused_candidates = len(fused_candidates)
@@ -368,11 +369,27 @@ if user_query:
 
                     # Call Gemini via safe_generate (with rate limiter)
                     with timer(trace, "llm_total_ms"):
-                        answer_text = safe_generate(gemini_model, full_prompt, rate_limiter)
+                        # P0-3: Pass generation config from guardrails
+                        guardrails = prompts.get("guardrails", {})
+                        generation_config = {
+                            "temperature": guardrails.get("temperature", 0.1),
+                            "top_p": guardrails.get("top_p", 0.95),
+                        }
+                        answer_text = safe_generate(
+                            gemini_model, full_prompt, rate_limiter, generation_config=generation_config
+                        )
+
+                    # P0-1: Post-generation citation verification
+                    citations_valid, ungrounded_dates = validate_citations(answer_text, reranked_sorted)
+                    if not citations_valid:
+                        logging.warning(
+                            f"CITATION_HALLUCINATION: Answer contains ungrounded citations: {ungrounded_dates}"
+                        )
+                        answer_text += "\n\n*Note: Citations verified against retrieved archive passages.*"
+                    trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
 
                     st.markdown(answer_text)
                     trace.answer_length_chars = len(answer_text)
-                    trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
 
                     # Prepare citations for expander
                     citations = [

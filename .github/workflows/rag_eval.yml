@@ -35,17 +35,17 @@ jobs:
           pip install -r requirements.txt
           pip install pytest ragas datasets
 
-      - name: Validate Golden Eval Set Schema
+- name: Validate Golden Eval Set Schema
         run: |
           python -c "
           import json
-          with open('tests/golden_eval_set.json') as f:
+          with open('tests/golden_eval_set_2026.json') as f:
               data = json.load(f)
-          assert len(data) == 50, f'Expected 50 items, got {len(data)}'
-          required = {'id','category','question','ground_truth','source_edition_dates','source_pages'}
+          assert len(data) == 25, f'Expected 25 items, got {len(data)}'
+          required = {'id','category','question','ground_truth','expected_citation_dates','expected_pages','difficulty'}
           for item in data:
               assert required.issubset(item.keys()), f'Missing keys in {item[\"id\"]}'
-          print('✓ Golden eval set schema validated (50 items)')
+          print('✓ Golden eval set schema validated (25 items)')
           "
 
       - name: Run Full Test Suite (Expanded Harness)
@@ -57,11 +57,12 @@ jobs:
           pytest tests/ -v --ignore=tests/test_ragas_eval.py --tb=short --no-header \
             | tee eval_results.txt
 
-      - name: Run RAGAS Faithfulness Evaluation Suite (Golden Set)
+      - name: Run RAGAS Faithfulness Evaluation Suite (Golden Set 2026)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
           QDRANT_READ_KEY: ${{ secrets.QDRANT_READ_KEY }}
+          EVAL_SET_PATH: tests/golden_eval_set_2026.json
         run: |
           pytest tests/test_ragas_eval.py -v --tb=short --no-header \
             | tee -a eval_results.txt

@@ -23,6 +23,7 @@ from engine import (
     reciprocal_rank_fusion,
     rerank_candidates,
     should_refuse,
+    validate_citations,
     with_qdrant_retry,
 )
 from schemas import ChunkPayload, RerankedPassage, RetrievalSource, SearchResult
@@ -43,8 +44,8 @@ def _make_payload(edition_date: str = "2026-08-24", page: int = 1) -> ChunkPaylo
     )
 
 
-def _make_reranked(score: float) -> RerankedPassage:
-    payload = _make_payload()
+def _make_reranked(score: float, edition_date: str = "2026-08-24", page: int = 1) -> RerankedPassage:
+    payload = _make_payload(edition_date, page)
     return RerankedPassage(
         point_id="test_id",
         text="x",
@@ -652,3 +653,102 @@ class TestQdrantRetryDecorator:
         assert QdrantRetryConfig.MAX_DELAY_S == 8.0
         assert QdrantRetryConfig.JITTER_RANGE == 0.25
         assert QdrantRetryConfig.RETRYABLE_STATUS_CODES == {429, 502, 503, 504}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0-1: Citation Verification Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCitationVerification:
+    def test_all_citations_grounded(self) -> None:
+        """All cited dates present in context → valid."""
+        answer = "Tax rate is 12.5% [Edition: 2026-08-24 | Page: 1] and 10% [Edition: 2025-07-15 | Page: 3]."
+        passages = [
+            _make_reranked(0.9, edition_date="2026-08-24", page=1),
+            _make_reranked(0.8, edition_date="2025-07-15", page=3),
+        ]
+        valid, ungrounded = validate_citations(answer, passages)
+        assert valid is True
+        assert ungrounded == []
+
+    def test_ungrounded_citation_detected(self) -> None:
+        """Cited date not in context → invalid with ungrounded list."""
+        answer = "Tax rate is 12.5% [Edition: 2026-08-24 | Page: 1] and 15% [Edition: 2024-01-01 | Page: 5]."
+        passages = [
+            _make_reranked(0.9, edition_date="2026-08-24", page=1),
+            _make_reranked(0.8, edition_date="2025-07-15", page=3),
+        ]
+        valid, ungrounded = validate_citations(answer, passages)
+        assert valid is False
+        assert ungrounded == ["2024-01-01"]
+
+    def test_multiple_ungrounded_citations(self) -> None:
+        """Multiple ungrounded citations all reported."""
+        answer = "Rates: [Edition: 2026-08-24 | Page: 1], [Edition: 2024-01-01 | Page: 2], [Edition: 2023-06-15 | Page: 3]."
+        passages = [_make_reranked(0.9, edition_date="2026-08-24", page=1)]
+        valid, ungrounded = validate_citations(answer, passages)
+        assert valid is False
+        assert set(ungrounded) == {"2024-01-01", "2023-06-15"}
+
+    def test_no_citations_always_valid(self) -> None:
+        """Answer with no citations → valid (empty ungrounded)."""
+        answer = "I don't have enough information to answer."
+        passages = [_make_reranked(0.9, edition_date="2026-08-24", page=1)]
+        valid, ungrounded = validate_citations(answer, passages)
+        assert valid is True
+        assert ungrounded == []
+
+    def test_duplicate_citations_counted_once(self) -> None:
+        """Duplicate ungrounded citations reported once."""
+        answer = "Rate is X [Edition: 2024-01-01 | Page: 1] and also [Edition: 2024-01-01 | Page: 2]."
+        passages = [_make_reranked(0.9, edition_date="2026-08-24", page=1)]
+        valid, ungrounded = validate_citations(answer, passages)
+        assert valid is False
+        assert ungrounded == ["2024-01-01"]  # deduped by regex findall behavior
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0-2: Reference Date Injectability Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestReferenceDateInjectability:
+    def test_fixed_reference_date_produces_deterministic_scores(self) -> None:
+        """Passing fixed reference_date yields reproducible recency multipliers."""
+        payload = _make_payload("2026-08-24")
+        dense = [
+            SearchResult(
+                point_id="doc1",
+                text="t",
+                payload=payload,
+                score=0.9,
+                source=RetrievalSource.DENSE,
+                dense_rank=1,
+            )
+        ]
+        # Fixed historical reference date
+        fixed_ref = date(2026, 8, 29)
+        result1 = reciprocal_rank_fusion(dense, [], {"doc1": payload}, reference_date=fixed_ref)
+        result2 = reciprocal_rank_fusion(dense, [], {"doc1": payload}, reference_date=fixed_ref)
+        assert result1[0]["recency_multiplier"] == result2[0]["recency_multiplier"]
+        # Δt = 5 days → recency = 1 + 0.35 * exp(-5/365) ≈ 1.345
+        expected = 1.0 + 0.35 * math.exp(-5 / 365.0)
+        assert result1[0]["recency_multiplier"] == pytest.approx(expected, rel=1e-6)
+
+    def test_reference_date_defaults_to_today_when_none(self) -> None:
+        """When reference_date=None, falls back to date.today() (legacy behavior)."""
+        payload = _make_payload(date.today().isoformat())
+        dense = [
+            SearchResult(
+                point_id="doc1",
+                text="t",
+                payload=payload,
+                score=0.9,
+                source=RetrievalSource.DENSE,
+                dense_rank=1,
+            )
+        ]
+        result = reciprocal_rank_fusion(dense, [], {"doc1": payload}, reference_date=None)
+        # Δt = 0 → recency = 1.35
+        assert result[0]["recency_multiplier"] == pytest.approx(1.35, abs=1e-6)

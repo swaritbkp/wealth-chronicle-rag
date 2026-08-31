@@ -43,26 +43,3 @@ guardrails:
   max_context_passages: 4
   temperature: 0.1
   top_p: 0.95
-
-# Legacy compatibility (retained for backward tests)
-prompt_version: "2.0"
-rag_prompt_template: |
-  Analyze the following retrieved context passages from The Economic Times Wealth archive to answer the user query.
-  
-  ---------------------
-  RETRIEVED CONTEXT:
-  {context}
-  ---------------------
-  
-  USER QUERY:
-  {query}
-  
-  RESPONSE INSTRUCTIONS:
-  - If the context contains the answer:
-    * Provide a direct, well-structured response using Markdown.
-    * Attach [Edition: YYYY-MM-DD | Page: P] to every claim.
-  - If the context is insufficient, state clearly that the archive does not contain sufficient information.
-
-refusal_config:
-  cross_encoder_min_score: 0.25
-  min_relevant_chunks: 1

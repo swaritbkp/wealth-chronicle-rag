@@ -36,6 +36,8 @@ except ImportError:
 
 from schemas import ChunkPayload, RerankedPassage, SearchResult
 
+import re
+
 logger = logging.getLogger("wealthchronicle.trace")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +96,19 @@ def load_and_validate_prompts(config_path: str = "config/prompts.yaml") -> dict:
         missing = required_vars - found_vars
         if missing:
             raise ValueError(f"Template '{template_key}' missing variables: {missing}")
+
+    # P0-5: Log deprecation warnings for legacy keys
+    legacy_keys = {
+        "rag_prompt_template": "rag_synthesis_template",
+        "refusal_config": "guardrails",
+        "prompt_version": "version",
+    }
+    for legacy_key, v2_key in legacy_keys.items():
+        if legacy_key in config:
+            logging.warning(
+                f"DEPRECATION: Prompt config key '{legacy_key}' is deprecated. "
+                f"Use '{v2_key}' instead. Support will be removed in a future version."
+            )
 
     return config
 
@@ -320,6 +335,37 @@ def should_refuse(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# P0-1: Post-Generation Citation Verification
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def validate_citations(
+    answer_text: str,
+    context_passages: list[RerankedPassage],
+) -> tuple[bool, list[str]]:
+    """Verify that all citations in the answer reference editions present in the provided context.
+
+    Args:
+        answer_text: The generated answer text containing [Edition: YYYY-MM-DD] citations.
+        context_passages: List of RerankedPassage objects that were provided as context.
+
+    Returns:
+        Tuple of (is_valid, ungrounded_dates) where ungrounded_dates are cited dates
+        not present in the context passages (unique, deduplicated).
+    """
+    # Extract all cited dates from answer
+    cited_dates = re.findall(r"\[Edition:\s*(\d{4}-\d{2}-\d{2})", answer_text)
+
+    # Collect valid edition dates from context passages
+    valid_dates = {str(p.payload.edition_date) for p in context_passages}
+
+    # Find ungrounded citations (deduplicated)
+    ungrounded = list(dict.fromkeys(d for d in cited_dates if d not in valid_dates))
+
+    return len(ungrounded) == 0, ungrounded
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TASK-2.5: Gemini Rate Limiter & 429 Backoff
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -350,13 +396,31 @@ class GeminiRateLimiter:
             time.sleep(sleep_time)
 
 
-def safe_generate(model, prompt: str, rate_limiter: GeminiRateLimiter) -> str:
-    """Generate with rate limiting and 429 retry."""
+def safe_generate(
+    model,
+    prompt: str,
+    rate_limiter: GeminiRateLimiter,
+    generation_config: dict | None = None,
+) -> str:
+    """Generate with rate limiting and 429 retry.
+
+    Args:
+        model: The Gemini model instance.
+        prompt: The prompt to send to the model.
+        rate_limiter: Rate limiter instance for API quota management.
+        generation_config: Optional generation configuration (temperature, top_p, etc.).
+
+    Returns:
+        Generated text or fallback message on failure.
+    """
     rate_limiter.acquire()
 
     for attempt in range(3):
         try:
-            response = model.generate_content(prompt)
+            if generation_config:
+                response = model.generate_content(prompt, generation_config=generation_config)
+            else:
+                response = model.generate_content(prompt)
             return response.text
         except Exception as e:
             # Check for ResourceExhausted (429)

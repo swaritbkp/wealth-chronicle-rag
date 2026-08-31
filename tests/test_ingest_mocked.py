@@ -441,3 +441,43 @@ class TestDateParser:
     def test_mixed_case_month(self) -> None:
         assert extract_edition_date_from_text("AUGUST 24-30, 2026") == "2026-08-24"
         assert extract_edition_date_from_text("august 24, 2026") == "2026-08-24"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0-4: Point Collision & Integrity Guard Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPointCollisionGuard:
+    def test_collision_detection_with_different_text(self, caplog) -> None:
+        """Mock test: verify collision check logic detects different text for same point_id."""
+
+        # This test validates the collision check logic conceptually
+        # The actual check happens in ingest_pdf() which requires a real Qdrant client
+        # Here we verify the point_id generation is deterministic (collision-resistant)
+        pid1 = generate_point_id("2026-08-24", 14, 2, "Understanding Tax Slabs Under the New Regime")
+        pid2 = generate_point_id("2026-08-24", 14, 2, "Understanding Tax Slabs Under the New Regime")
+        pid3 = generate_point_id("2026-08-24", 14, 2, "Different text content here")
+
+        assert pid1 == pid2  # Same inputs → same ID
+        assert pid1 != pid3  # Different text prefix → different ID
+
+        # With 50 chars truncation, first 50 chars same → same ID
+        long_text1 = "A" * 50 + "EXTRA1"
+        long_text2 = "A" * 50 + "EXTRA2"
+        pid4 = generate_point_id("2026-08-24", 14, 2, long_text1)
+        pid5 = generate_point_id("2026-08-24", 14, 2, long_text2)
+        assert pid4 == pid5  # Truncated to 50 chars → same ID
+
+    def test_500_unique_ids_no_collision(self) -> None:
+        """Stress test: 500 unique (edition, page, chunk, text) tuples → zero collisions."""
+        seen: set[str] = set()
+        for i in range(500):
+            edition = f"2026-08-{(i % 28) + 1:02d}"
+            page = (i % 200) + 1
+            chunk_idx = i % 50
+            text_prefix = f"Synthetic chunk text number {i} with unique suffix"
+            pid = generate_point_id(edition, page, chunk_idx, text_prefix)
+            assert pid not in seen, f"Collision at i={i} pid={pid}"
+            seen.add(pid)
+        assert len(seen) == 500

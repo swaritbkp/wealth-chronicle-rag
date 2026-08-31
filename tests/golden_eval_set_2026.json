@@ -1,0 +1,329 @@
+[
+  {
+    "id": "eval_001",
+    "category": "tax_regime",
+    "question": "What is the FAST-DS foreign asset disclosure scheme threshold and tax rate?",
+    "ground_truth": "The Foreign Asset Small Taxpayers Disclosure Scheme (FAST-DS) has two eligibility buckets: (1) Foreign assets value up to Rs 1 crore - pay 10% tax on undisclosed income; (2) Foreign assets value above Rs 1 crore - pay 15% tax on undisclosed income. Both require filing Schedule FA in ITR and payment by 31 Dec 2024.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      16
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_002",
+    "category": "tax_regime",
+    "question": "What are the two eligibility buckets under FAST-DS and their respective tax rates?",
+    "ground_truth": "FAST-DS has two buckets: (1) Foreign assets value up to Rs 1 crore - 10% tax on undisclosed income; (2) Foreign assets value above Rs 1 crore - 15% tax on undisclosed income. Both buckets require disclosure in Schedule FA and payment of tax by 31 December 2024.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      16
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_003",
+    "category": "tax_regime",
+    "question": "Which ITR schedule must be filed for FAST-DS disclosure and by when must the tax be paid?",
+    "ground_truth": "Schedule FA must be filed in the ITR for FAST-DS disclosure. The tax must be paid by 31 December 2024.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      16
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_004",
+    "category": "mutual_funds",
+    "question": "What are the 1-year and 3-year returns for Invesco India Largecap and Nippon India Large Cap funds?",
+    "ground_truth": "Invesco India Largecap: 1-year 8.8%, 3-year 8.2%. Nippon India Large Cap: 1-year 12.0%, 3-year 14.0%. Data as of the edition date.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      18
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_005",
+    "category": "mutual_funds",
+    "question": "Which largecap mutual fund showed the highest 5-year return in the performance table?",
+    "ground_truth": "Invesco India Flexi Cap showed 18.5% 5-year return, which is the highest among the listed largecap funds. HDFC Large Cap showed 5.0%, Nippon India Large Cap showed 14.0%, and Invesco India Largecap showed 8.5%.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      18
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_006",
+    "category": "mutual_funds",
+    "question": "What are the 3-month and 6-month returns for Axis Liquid and Edelweiss Liquid funds?",
+    "ground_truth": "Axis Liquid: 3-month 1.7%, 6-month 3.4%. Edelweiss Liquid: 3-month data not fully captured in chunk, 6-month 3.4% (based on available data). Both funds show consistent short-term returns.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      19
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_007",
+    "category": "mutual_funds",
+    "question": "Which momentum funds and their 1-year returns are listed on page 4?",
+    "ground_truth": "ICICI Pru Active Momentum: 9.09% 1-year return. Qode Tactical: 14.86% 1-year return.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      4
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_008",
+    "category": "insurance_claims",
+    "question": "What are the average health insurance claim amounts by disease category?",
+    "ground_truth": "Cancer & tumours: Rs 5.55 lakh average claim. Bone, joint & muscle disorders: Rs 2.33 lakh average claim.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      3
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_009",
+    "category": "insurance_claims",
+    "question": "Why is a 5 to 10 lakh health insurance cover no longer adequate according to the cover story?",
+    "ground_truth": "The cover story explains that medical inflation has outpaced general inflation, with average claim amounts for serious conditions like cancer exceeding Rs 5.55 lakh. A 5-10 lakh cover may be exhausted in a single major hospitalization. Experts recommend at least Rs 25-50 lakh base cover plus a super top-up.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      2
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_010",
+    "category": "tax_regime",
+    "question": "What is the Momentum investing methodology and QGLP framework mentioned in the magazine?",
+    "ground_truth": "Momentum investing follows the QGLP framework: Quality of business, Growth in earnings, Longevity of competitive advantage, and Price at reasonable valuation. The strategy invests in stocks showing strong price momentum with fundamental quality filters.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      4,
+      6
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_011",
+    "category": "mutual_funds",
+    "question": "What are the top-ranked momentum stocks and their scores from the momentum table?",
+    "ground_truth": "Top momentum stocks: Muthoot Finance (Rank 1, Score 10.1, PE 2.8, PB 51), followed by other stocks in the momentum ranking table with their respective revenue growth, net profit, PE, PB, and composite rating scores.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      17
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_012",
+    "category": "tax_regime",
+    "question": "What are the 1-year Bank FD interest rates for major banks as of the edition date?",
+    "ground_truth": "1-year FD rates: Bandhan Bank 7.0%, with other banks listed in the table showing rates and maturity values for Rs 10,000 investment. The table includes multiple banks with their respective rates and maturity amounts.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      20
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_013",
+    "category": "tax_regime",
+    "question": "What is the sector performance matrix for 2017-2026 and which sector ranked highest over 10 years?",
+    "ground_truth": "The 10-year sector matrix (18 sectors x 10 years) shows performance across 2017-2026. The sector ranking is provided in the last column showing 10-year rank positions. Specific top sector varies by metric.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      15
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "eval_014",
+    "category": "mutual_funds",
+    "question": "What are the 3-year and 5-year returns for HDFC Large Cap and Invesco India Flexi Cap funds?",
+    "ground_truth": "HDFC Large Cap: 3-year 5.0%, 5-year data not fully captured. Invesco India Flexi Cap: 3-year 2.2%, 5-year 18.5%. Invesco India Largecap: 3-year 8.2%, 5-year 8.5%. Nippon India Large Cap: 3-year 14.0%, 5-year 12.0%.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      18
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_015",
+    "category": "estate_succession",
+    "question": "What are the key considerations for matrimonial asset planning and property rights discussed in the magazine?",
+    "ground_truth": "The magazine covers matrimonial asset planning including property rights, maintenance claims, and division of assets during divorce. It discusses how property acquired before/after marriage is treated, rights of spouses, and strategies for protecting financial interests.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      12,
+      13
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_016",
+    "category": "retirement_nps",
+    "question": "What are the IEPF claim processes and gift tax implications discussed in the expert advice section?",
+    "ground_truth": "The expert advice section covers IEPF (Investor Education and Protection Fund) claim processes for unclaimed dividends/shares, and gift tax implications including exemptions for gifts from relatives, taxation of gifts above Rs 50,000 from non-relatives, and property gift considerations.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      11
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_017",
+    "category": "tax_regime",
+    "question": "How does the property sale STP (Systematic Transfer Plan) work for capital gains management?",
+    "ground_truth": "The property sale STP involves transferring proceeds from property sale into a liquid/ultra-short fund and then systematically transferring to equity funds to average entry cost and manage capital gains tax liability. This reduces timing risk and optimizes tax efficiency.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      11
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_018",
+    "category": "tax_regime",
+    "question": "What is the Guest Column on 'Status matching' for loyalty programs about?",
+    "ground_truth": "The Guest Column discusses how frequent-flyer and hotel loyalty programs traditionally follow 'spend more, stay more, or fly more' formula, but status matching allows members to leverage status from one program to get equivalent status in another, providing immediate benefits without requalification.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      14
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_019",
+    "category": "tax_regime",
+    "question": "What is the Guest Column on 'A clean window for overseas money' about regarding FAST-DS?",
+    "ground_truth": "The Guest Column explains the Foreign Asset Small Taxpayers Disclosure Scheme (FAST-DS) as a one-time window for declaring undisclosed foreign assets with reduced penalties. It details the two eligibility buckets based on asset value (up to Rs 1 crore at 10%, above Rs 1 crore at 15%) and the requirement to file Schedule FA by 31 Dec 2024.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      16
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_020",
+    "category": "mutual_funds",
+    "question": "What are the key components of the 8-quarter sector momentum matrix on page 10?",
+    "ground_truth": "The 8-quarter sector momentum matrix covers 8 sectors across 8 quarters (Sep 2024 to Jun 2026), showing momentum scores for sectors like Chemicals, Auto, Banking, IT, Pharma, FMCG, Metals, and Realty. It helps identify sectors with persistent momentum.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      10
+    ],
+    "difficulty": "hard"
+  },
+  {
+    "id": "eval_021",
+    "category": "tax_regime",
+    "question": "Should I invest in Bitcoin for retirement planning?",
+    "ground_truth": "The publication archives do not contain sufficient guidance on this topic. Cryptocurrency investments are not covered in the magazine's financial advisory content.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      1
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_022",
+    "category": "tax_regime",
+    "question": "What is the capital gains tax rate for NFTs sold in 2026?",
+    "ground_truth": "The publication archives do not contain sufficient guidance on this topic. NFT taxation is not addressed in the available edition.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      1
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_023",
+    "category": "mutual_funds",
+    "question": "Which crypto exchange offers the best returns for Indian investors?",
+    "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine focuses on traditional financial products like mutual funds, insurance, and fixed deposits.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      1
+    ],
+    "difficulty": "easy"
+  },
+  {
+    "id": "eval_024",
+    "category": "insurance_claims",
+    "question": "What is the claim settlement ratio for a specific private insurer not mentioned in the magazine?",
+    "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine covers general insurance principles but not insurer-specific claim ratios.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      1
+    ],
+    "difficulty": "medium"
+  },
+  {
+    "id": "eval_025",
+    "category": "estate_succession",
+    "question": "What will be the Nifty 50 level on 31 December 2026?",
+    "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine does not provide market predictions or speculative price targets.",
+    "source_edition_dates": [
+      "2026-08-24"
+    ],
+    "source_pages": [
+      1
+    ],
+    "difficulty": "medium"
+  }
+]

@@ -7,6 +7,7 @@ Upgraded with watermark sanitization and table-aware chunking for Economic Times
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sys
 import time
@@ -131,6 +132,7 @@ def clean_extracted_text(text: str) -> str:
     - Footer lines matching ***This PDF download is allowed by Economic Times.*
     - Email watermarks (subscriber emails)
     - Running top banners www.etwealth.co | ...
+    - Statutory mutual fund warning phrases
 
     Returns cleaned text with normalized whitespace.
     """
@@ -167,6 +169,9 @@ def clean_extracted_text(text: str) -> str:
     # Rejoin and also run global email substitution for any inline emails missed
     cleaned = "\n".join(cleaned_lines)
     cleaned = _EMAIL_PATTERN.sub("", cleaned)
+    # Strip statutory warning phrases globally (even within preserved editorial content)
+    cleaned = re.sub(r"mutual fund investments are subject to market risks[^.\n]*\.?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"read all scheme related documents carefully[^.\n]*\.?", "", cleaned, flags=re.IGNORECASE)
     # Collapse multiple blank lines
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     # Remove lines that are now just whitespace
@@ -227,7 +232,7 @@ def _extract_section_title(text: str) -> str | None:
     """Extract top-level heading/section title from page markdown.
 
     Looks for first markdown heading (#, ##, etc.) on the page.
-    Returns title without hash marks, or None if not found.
+    Returns title without hash marks and markdown formatting, or None if not found.
     """
     for line in text.split("\n"):
         stripped = line.strip()
@@ -238,9 +243,35 @@ def _extract_section_title(text: str) -> str | None:
             # Clean up markdown formatting inside heading
             title = re.sub(r"\*\*(.+?)\*\*", r"\1", title)
             title = re.sub(r"\*(.+?)\*", r"\1", title)
+            # Remove any remaining markdown artifacts
+            title = re.sub(r"[#*_`~]", "", title).strip()
             if title:
                 return title
     return None
+
+
+def _has_table_data_rows(table_text: str) -> bool:
+    """Check if a markdown table chunk has at least 1 data row (not just header/separator).
+
+    Returns True if the table has meaningful data rows, False if it's just
+    header + separator or header only (artifact from collapsed newlines).
+    """
+    lines = [line for line in table_text.strip().split("\n") if line.strip().startswith("|")]
+    if len(lines) < 2:
+        return False
+    # Check for header separator line
+    has_separator = any(re.search(r"\|\s*---+\s*\|", line) for line in lines)
+    if has_separator:
+        # Has formal markdown separator - count non-header, non-separator lines
+        data_rows = [line for line in lines if not re.search(r"\|\s*---+\s*\|", line)]
+        # Exclude the first line (header) from data rows
+        if data_rows and not re.search(r"\|\s*---+\s*\|", data_rows[0]):
+            data_rows = data_rows[1:]
+        return len(data_rows) >= 1
+    else:
+        # No formal separator - if we have multiple pipe lines, assume they're data
+        # This handles tables without markdown separators (e.g., from PDF extraction)
+        return len(lines) >= 3
 
 
 def _split_table_blocks(text: str) -> list[tuple[str, str]]:
@@ -307,6 +338,8 @@ def _chunk_table_atomic(table_text: str, prefix: str, max_tokens: int = 800) -> 
 
     If table under max_tokens words, return single chunk.
     For oversized tables, split by rows while repeating header row at top of each chunk.
+    Discard any slice with fewer than 2 actual data rows (e.g., just header + delimiter).
+    Handles case where header and separator are on the same line (collapsed newlines from PDF).
     """
     # Check if table is small enough to keep atomic
     words = table_text.split()
@@ -324,14 +357,25 @@ def _chunk_table_atomic(table_text: str, prefix: str, max_tokens: int = 800) -> 
     header = rows[0]
     separator = None
     data_start_idx = 1
-    if len(rows) > 1 and re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", rows[1]):
+
+    # Check if header line contains both header and separator (collapsed newlines)
+    # Pattern: | Header | Header | ... |---|---|...
+    header_sep_match = re.search(r"(\|.*\|)\s*(\|?\s*:?-+:?\s*\|.*)$", header)
+    if header_sep_match and not separator:
+        # Split header and separator
+        header = header_sep_match.group(1).rstrip()
+        separator = header_sep_match.group(2).strip()
+        data_start_idx = 1  # Data rows start from next line
+    elif len(rows) > 1 and re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", rows[1]):
         separator = rows[1]
         data_start_idx = 2
 
     data_rows = rows[data_start_idx:]
     if not data_rows:
-        # Only header, return atomic
-        chunk = f"{prefix}{table_text}" if prefix else table_text
+        # Only header, return atomic (but if header had collapsed separator, keep it)
+        chunk = f"{prefix}{header}"
+        if separator:
+            chunk += "\n" + separator
         return [chunk]
 
     chunks: list[str] = []
@@ -344,22 +388,24 @@ def _chunk_table_atomic(table_text: str, prefix: str, max_tokens: int = 800) -> 
         # If adding this row would exceed max_tokens, flush current chunk
         if current_rows and (current_word_count + row_words + header_words) >= max_tokens:
             # Build chunk with header repetition
-            chunk_lines = [header]
-            if separator:
-                chunk_lines.append(separator)
-            chunk_lines.extend(current_rows)
-            chunk_text = "\n".join(chunk_lines)
-            if prefix:
-                chunk_text = f"{prefix}{chunk_text}"
-            chunks.append(chunk_text)
+            # Only keep chunk if it has at least 2 data rows
+            if len(current_rows) >= 2:
+                chunk_lines = [header]
+                if separator:
+                    chunk_lines.append(separator)
+                chunk_lines.extend(current_rows)
+                chunk_text = "\n".join(chunk_lines)
+                if prefix:
+                    chunk_text = f"{prefix}{chunk_text}"
+                chunks.append(chunk_text)
             current_rows = []
             current_word_count = 0
 
         current_rows.append(row)
         current_word_count += row_words
 
-    # Flush remaining
-    if current_rows:
+    # Flush remaining - only if at least 2 data rows
+    if current_rows and len(current_rows) >= 2:
         chunk_lines = [header]
         if separator:
             chunk_lines.append(separator)
@@ -435,6 +481,9 @@ def sliding_window_chunk(
                 # Tables use lower threshold (20 chars) and bypass strict min_chars, but still filter noise/warning
                 if len(tc.strip()) >= 20 and not tc.lower().strip().startswith(_NOISE_PREFIXES):
                     if _is_statutory_warning_dominated(tc):
+                        continue
+                    # Discard table chunks with no meaningful data rows (header + separator only)
+                    if not _has_table_data_rows(tc):
                         continue
                     chunks.append(tc)
         else:  # prose
@@ -829,6 +878,9 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
                 m = re.match(r"^\[Section:\s*([^\]]+)\]", chunk_text)
                 if m:
                     article_title = m.group(1).strip()
+            # Fallback: use page number as title if still None
+            if article_title is None:
+                article_title = f"Page {page_number}"
 
             payload = ChunkPayload(
                 chunk_id=chunk_id,
@@ -869,6 +921,20 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
     # 9. Ensure collection and indexes, then upsert
     init_collection(client)
     ensure_payload_indexes(client)
+
+    # P0-4: Point collision & integrity guard
+    for point_id, payload in zip(all_point_ids, all_payloads):
+        try:
+            existing = client.retrieve(collection_name=COLLECTION_NAME, ids=[point_id], with_payload=True)
+            if existing and existing[0].payload:
+                existing_text = existing[0].payload.get("text", "")
+                if existing_text != payload.text:
+                    logging.warning(
+                        f"POINT_COLLISION_DETECTED: point_id={point_id} has different text payload. "
+                        f"Existing: {existing_text[:100]}... New: {payload.text[:100]}..."
+                    )
+        except Exception as e:
+            logging.debug(f"Collision check failed for {point_id}: {e}")
 
     @with_qdrant_retry
     def _upsert():
