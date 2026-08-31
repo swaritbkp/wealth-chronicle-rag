@@ -24,7 +24,7 @@ WealthChronicle AI is an evaluated, production-grade Retrieval-Augmented Generat
 
 Latency budget P95 ≤ 2.2s: FastEmbed 22ms + Qdrant 80ms + BM25 8ms + RRF <1ms + FlashRank 85ms + Gemini TTFT 800ms + generation 1100ms ≈ 2.1s.
 
-For full sequence diagrams and HNSW rationale, see `TECH_SPEC.md` §1–§4.
+For full sequence diagrams and HNSW rationale, see `mdfiles/TECH_SPEC.md` §1–§4.
 
 ## Quick Start
 
@@ -117,21 +117,21 @@ Get-ChildItem data/*.pdf | ForEach-Object { .\.venv\Scripts\python.exe ingest.py
 
 ### Golden dataset
 
-`tests/golden_eval_set.json` contains 50 curated Q&A pairs:
+`tests/golden_eval_set_2026.json` contains 25 curated Q&A pairs aligned to the 2026-08-24 corpus:
 
-- `tax_regime`: 15, `mutual_funds`: 12, `insurance_claims`: 10, `retirement_nps`: 8, `estate_succession`: 5
-- Difficulties: 15 easy / 25 medium / 10 hard
-- Each entry validated against `schemas.EvaluationItem` (ID pattern `eval_001`…`eval_050`)
+- `tax_regime`: 7, `mutual_funds`: 6, `insurance_claims`: 2, `retirement_nps`: 0, `estate_succession`: 1, plus 9 cross-category (tabular/prose/refusal)
+- Difficulties: 7 easy / 12 medium / 6 hard
+- Each entry validated against `schemas.EvaluationItem` (ID pattern `eval_001`…`eval_025`)
 
 Validate:
 
 ```bash
 python -c "
 import json; from schemas import EvaluationItem
-with open('tests/golden_eval_set.json') as f: data=json.load(f)
-assert len(data)==50
+with open('tests/golden_eval_set_2026.json') as f: data=json.load(f)
+assert len(data)==25
 for item in data: EvaluationItem(**item)
-print('50 items validated')
+print('25 items validated')
 "
 ```
 
@@ -156,7 +156,7 @@ Offline mode: without credentials, the suite runs a mock evaluation that still a
 
 `.github/workflows/rag_eval.yml` triggers on pull requests to `main` affecting `*.py`, `config/**`, `tests/**`, `requirements.txt` (covers `engine.py`, `schemas.py`, `app.py`, `ingest.py`). It:
 
-1. Validates the 50-item schema
+1. Validates the 25-item schema in `tests/golden_eval_set_2026.json`
 2. Runs full unit/integration suite `pytest tests/ --ignore=tests/test_ragas_eval.py` and separate `pytest tests/test_ragas_eval.py` (avoids double RAGAS)
 3. Uploads `eval_results.txt` as artifact (30-day retention)
 4. Comments the PR with results (always)
@@ -196,15 +196,23 @@ wealth_chronicle_rag/
 ├── config/
 │   └── prompts.yaml             # Versioned prompts (prompt_version: 1.0.0)
 ├── tests/
-│   ├── golden_eval_set.json     # 50 curated Q&A pairs
+│   ├── golden_eval_set_2026.json # 25 curated Q&A pairs (corpus-aligned)
 │   └── test_ragas_eval.py       # RAGAS automated runner
+├── mdfiles/                     # Documentation & specifications
+│   ├── PRD.md                   # Product Requirements Document
+│   ├── TECH_SPEC.md             # Technical Specification
+│   ├── PLAN.md                  # Implementation Plan & Milestones
+│   ├── BUILD_SUMMARY.md         # Build Summary & Test Results
+│   ├── AUDIT_REPORT.md          # Code Audit Report
+│   └── DATA_AUDIT_REPORT.md     # Corpus & Benchmark Audit
 ├── data/                        # Local PDFs (gitignored)
 ├── app.py                       # Streamlit app (hybrid retrieval + UI)
 ├── ingest.py                    # Admin CLI (parse → chunk → embed → upsert)
 ├── schemas.py                   # Pydantic contracts (ChunkPayload, etc.)
 ├── engine.py                    # Shared engine (RRF, BM25, rerank, guardrails)
 ├── requirements.txt             # Locked production dependencies
-└── README.md                    # This file
+├── README.md                    # This file
+└── NEXT_SESSION.md              # Handoff Runbook
 ```
 
 ## Free-Tier Cost Breakdown

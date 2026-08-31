@@ -318,4 +318,79 @@ All commits follow conventional commits with scope and TASK-ID. Hardening commit
 
 ---
 
-*End of Build Summary — WealthChronicle AI v1.0 — All 29 tasks + hardening + 24-page ET Wealth upgrades + audit F-01..F-11 + prompts v2.0 + live Frankfurt cluster (34 chunks) verified (commits 8c4e3e9 → df63a4a → 0658e02).*
+## 7. P0 Production Hardening, Corpus Repair & 2026 Benchmark Realignment (2026-08-31)
+
+**Commit chain:** `59598ae` — adds P0 hardening, corpus re-ingestion, 2026 benchmark, doc reorganization.
+
+### 7.1 P0 Production Hardening (P0-1 to P0-5)
+
+| P0 | Target | Implementation | Verification |
+|----|--------|----------------|--------------|
+| **P0-1** | `engine.py` `app.py` | `validate_citations(answer, context_passages)` extracts `[Edition: YYYY-MM-DD]` regex, compares against provided passages, logs warning + appends disclaimer if ungrounded; `app.py` calls post-generation | 5 new tests in `TestCitationVerification` — grounded, ungrounded, multi-ungrounded, no-citations, duplicate-dedup |
+| **P0-2** | `engine.py` `app.py` `test_engine_extended.py` | `reciprocal_rank_fusion(reference_date=...)` already accepted; `app.py` passes `date.today()` explicitly; new tests `TestReferenceDateInjectability` verify deterministic scores at fixed historical dates (e.g., `date(2026,8,24)`) | 2 new tests — fixed date reproducibility, `None` defaults to `date.today()` |
+| **P0-3** | `engine.py` `app.py` | `safe_generate(model, prompt, rate_limiter, generation_config=None)`; `app.py` passes `{"temperature": 0.1, "top_p": 0.95}` from `prompts["guardrails"]` to `Gemini.generate_content` | Type-checked, no regressions in 117 tests |
+| **P0-4** | `ingest.py` | Pre-upsert `client.retrieve(point_id)` checks existing point text payload; logs `POINT_COLLISION_DETECTED` warning if different text for same ID | 2 new tests in `TestPointCollisionGuard` — collision detection logic, 500 unique IDs stress |
+| **P0-5** | `config/prompts.yaml` `engine.py` | YAML reduced to v2.0 keys only (`version`, `system_prompt`, `rag_synthesis_template`, `refusal_message`, `guardrails`); `load_and_validate_prompts` emits `DeprecationWarning` for legacy `rag_prompt_template`, `refusal_config`, `prompt_version` | Legacy fallback retained for backward tests; warnings logged on load |
+
+### 7.2 Corpus Repair & Re-Ingestion
+
+- **Re-ingested** `wealth_edition-133444653.pdf` (24-page ET Wealth) after table-split artifact fix:
+  - **Before:** 33 chunks (incl. 4 table-split artifacts with `data_rows=0`: `p3_001`, `p10_001`, `p15_001`, `p19_000`)
+  - **After:** 27 clean chunks — 5 tables with `data_rows ≥ 2` (FAST-DS, Fund Returns, Health Claims, FD Rates, Momentum Stocks), 22 prose
+  - **Artifact fix:** `_chunk_table_atomic` now discards slices with `< 2` data rows; `_has_table_data_rows` validates header+separator+≥2 data rows (handles collapsed `|---|` on header line)
+  - **Zero watermark leakage:** `statutory_warning` stripped globally in `clean_extracted_text` (0 hits across all 27 chunks)
+  - **Zero empty `article_title`:** fallback `article_title = f"Page {page_number}"` guarantees 100% populated
+
+### 7.3 2026 Golden Benchmark Realignment
+
+- **Created** `tests/golden_eval_set_2026.json` (25 items) strictly grounded in 2026-08-24 corpus:
+  - 8 tabular precision queries (FAST-DS buckets, FD rates, Largecap returns, Momentum funds, Health claim averages)
+  - 12 prose/regulatory synthesis (Cover story health cover, QGLP/Momentum, IEPF/gift tax/STP, Matrimonial)
+  - 5 adversarial/refusal triggers (Bitcoin, NFTs, crypto exchange, unknown insurer, Nifty prediction) → expect `should_refuse=True`
+- **Schema:** IDs `eval_001`–`eval_025`, all fields match `EvaluationItem` (non-empty `source_edition_dates` / `source_pages` for refusal items use `["2026-08-24"]` / `[1]`)
+- **CI updated:** `.github/workflows/rag_eval.yml` validates 25-item schema, sets `EVAL_SET_PATH=tests/golden_eval_set_2026.json`
+
+### 7.4 Documentation Reorganization
+
+- Created `mdfiles/` directory with all planning/spec/audit docs:
+  - `mdfiles/PRD.md`, `TECH_SPEC.md`, `PLAN.md`, `BUILD_SUMMARY.md`, `AUDIT_REPORT.md`, `DATA_AUDIT_REPORT.md`
+- `README.md` updated to reference `mdfiles/` paths and `golden_eval_set_2026.json`
+- `NEXT_SESSION.md` refreshed with office workstation bootstrap runbook
+
+### 7.5 Test Suite & Verification Metrics (117 passing)
+
+| Suite | Tests | Scope |
+|-------|-------|-------|
+| `test_engine_extended.py` | 46 | Recency math (Δt=0/365/1000/neg, ties, missing), FlashRank fallback (RRF-order, missing payload, exception, real model, empty), Refusal boundaries (0.2499/0.2500/0.2501, min_chunks, empty), Concurrency (20 threads, 14/120 RPM), Retry jitter (429/502/503/504, frozenset, exponential), **Citation verification (5)**, **Reference date injectability (2)** |
+| `test_ingest_mocked.py` | 56 | Chunker edge (empty, <120, ad prefixes, malformed markdown, table no header, massive unbroken, sentence snap, overlap, unicode, noise mid, 119/120 boundary, stride), ID invariants (deterministic, format, distinct, truncation 50, 500 zero collisions, zero-padding, lowercase, page 200, idempotency), Watermark (footer, email, banner, multi, clean, statutory), Table-aware (atomic, not split, oversized split w/ header repeat, section prefix, no heading no prefix, pipes integrity), Date parser (Aug 24-30, Aug abbrev, single day, day-month-year, month-year, various months, no date, first page header, invalid date, mixed case), **Point collision guard (2)** |
+| `test_app_isolated.py` | 18 | Session cap 20 (exact 20, 50→20, 25→20, alternating, empty, 19, 21, citations), Prompt v2.0 newest-first, context separators, template from YAML, citation `:.4f`, 4-passage separators, disclaimer/title, memory guard every 10, refusal skip-LLM |
+| `test_ragas_eval.py` | 1 | Mock offline (EVAL_SET_PATH=golden_eval_set_2026.json) |
+| **Total** | **117** | **All passed** |
+
+### 7.5 Static Analysis & Typing
+
+| Tool | Config | Result |
+|------|--------|--------|
+| `ruff` | E,F line-length 250 | `All checks passed!` (3 E741 fixed in `_has_table_data_rows`) |
+| `black` | 250 | `All done!` |
+| `isort` | black profile 250 | `Skipped` (PYTHONUTF8=1) |
+| `mypy` | ignore_missing_imports, disable valid-type/no-redef/arg-type/attr-defined | `Success: no issues found in 4 source files` |
+
+### 7.6 Synthetic Benchmark & Latency
+
+`scripts/benchmark_latency.py` — 300 synthetic 384-d vectors, 100 hybrid queries (dense+BM25+RRF+RRF-only rerank):
+
+| Metric | Value | Budget | Status |
+|--------|-------|--------|--------|
+| P50 | 5.0 ms | — | — |
+| P90 | 5.3 ms | — | — |
+| P95 | 5.5 ms | ≤ 2200 ms | ✅ PASS |
+| Dense P50 | 0.7 ms | — | — |
+| Sparse P50 | 0.4 ms | — | — |
+| RRF P50 | 0.03 ms | — | — |
+
+Peak RSS 135.7 MB (< 200 MB warning, 65 MB headroom to 240 MB critical).
+
+---
+
+*End of Build Summary — WealthChronicle AI v1.0 — All 29 tasks + overnight hardening + ET Wealth upgrades + audit F-01..F-11 + prompts v2.0 + live Frankfurt cluster (34→27 chunks) + P0 hardening + corpus repair + 2026 benchmark + doc reorganization (commits 8c4e3e9 → 59598ae).*
