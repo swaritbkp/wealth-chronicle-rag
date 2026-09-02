@@ -16,6 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    env:
+      GEMINI_API_KEY: "dummy-key-for-mock-ci"
+      QDRANT_URL: ":memory:"
+      QDRANT_READ_KEY: "dummy-read-key"
+      PYTHONUTF8: "1"
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,7 +32,12 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgomp1
+
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -42,7 +53,7 @@ jobs:
 
       - name: Step 6 - Run Pytest Suite (148 Tests)
         run: |
-          pytest tests/ -v
+          pytest tests/ -v --tb=short
 
       - name: Step 7 - Run IR Benchmark Evaluation Runner
         run: |
@@ -50,6 +61,7 @@ jobs:
 
       - name: Upload Evaluation Metrics Artifact
         if: always()
+        if-no-files-found: ignore
         uses: actions/upload-artifact@v4
         with:
           name: eval-benchmark-metrics
