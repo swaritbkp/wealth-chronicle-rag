@@ -1,53 +1,52 @@
-# Python bytecode
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Virtual environments
-venv/
+# Environments & Dependencies
 .venv/
+venv/
 env/
 ENV/
 
-# IDE configs
+# Secrets & Credentials
+.streamlit/secrets.toml
+.env
+.env.local
+*.pem
+*.key
+
+# PDF Ingestion Data
+data/*.pdf
+!data/.gitkeep
+
+# Python & Cache Artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+logs/
+
+# IDE & Editor Configs
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# Secrets
-.streamlit/secrets.toml
-.env
-.env.local
-
-# Data directory (PDFs)
-data/
-*.pdf
-
-# Model caches
+# Model Caches
 /tmp/models/
 models/
 .cache/
 
-# Evaluation output
+# Evaluation Output & Coverage
 eval_results.txt
+.coverage
+htmlcov/
 
-# Logs
-*.log
-logs/
-
-# OS files
+# OS Artifacts
 .DS_Store
 Thumbs.db
 
-# Coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
-# Distribution
+# Build & Distribution
 dist/
 build/
 *.egg-info/
+

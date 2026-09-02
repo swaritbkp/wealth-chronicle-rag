@@ -38,3 +38,8 @@ exclude_lines = [
     "except Exception:",
     "except:",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+

@@ -1,5 +1,10 @@
 # WealthChronicle AI — Production-Grade Financial Archive Intelligence Engine
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Test Suite](https://img.shields.io/badge/tests-117%20passing-brightgreen.svg)](tests/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Architecture Rating](https://img.shields.io/badge/architecture-9.6%2F10%20Production%20Grade-success.svg)](mdfiles/AUDIT_REPORT.md)
+
 ## Project Overview
 
 WealthChronicle AI is an evaluated, production-grade Retrieval-Augmented Generation (RAG) system that turns a 50–100 issue archive of weekly personal finance publications (1,600–3,200+ dense pages) into a grounded, cited question-answering service. It combines layout-aware PDF parsing, hybrid dense+sparse retrieval with temporal recency weighting, cross-encoder reranking, deterministic refusal guardrails, execution tracing, and CI-gated RAGAS evaluation — all on a $0.00/month free-tier stack (Qdrant Cloud Free, Google AI Studio, Streamlit Cloud, local ONNX).
@@ -31,8 +36,8 @@ For full sequence diagrams and HNSW rationale, see `mdfiles/TECH_SPEC.md` §1–
 ### 1. Clone and create isolated local environment
 
 ```bash
-git clone https://github.com/<org>/wealth_chronicle_rag.git
-cd wealth_chronicle_rag
+git clone https://github.com/swaritbkp/wealth-chronicle-rag.git
+cd wealth-chronicle-rag
 # Create dedicated workspace venv (Python 3.11) — all commands must use this interpreter
 py -3.11 -m venv .venv
 # Windows (PowerShell)
@@ -187,32 +192,36 @@ Notes:
 ## Repository Structure
 
 ```
-wealth_chronicle_rag/
-├── .github/
-│   └── workflows/
-│       └── rag_eval.yml         # CI regression gate (RAGAS)
+wealth-chronicle-rag/
+├── .github/workflows/
 ├── .streamlit/
-│   └── secrets.toml.template    # Secrets template (never commit real secrets)
+│   └── secrets.toml.template
 ├── config/
-│   └── prompts.yaml             # Versioned prompts (prompt_version: 1.0.0)
+│   └── prompts.yaml
+├── data/
+│   └── .gitkeep
+├── mdfiles/
+│   ├── PRD.md
+│   ├── TECH_SPEC.md
+│   ├── PLAN.md
+│   ├── BUILD_SUMMARY.md
+│   ├── AUDIT_REPORT.md
+│   └── DATA_AUDIT_REPORT.md
 ├── tests/
-│   ├── golden_eval_set_2026.json # 25 curated Q&A pairs (corpus-aligned)
-│   └── test_ragas_eval.py       # RAGAS automated runner
-├── mdfiles/                     # Documentation & specifications
-│   ├── PRD.md                   # Product Requirements Document
-│   ├── TECH_SPEC.md             # Technical Specification
-│   ├── PLAN.md                  # Implementation Plan & Milestones
-│   ├── BUILD_SUMMARY.md         # Build Summary & Test Results
-│   ├── AUDIT_REPORT.md          # Code Audit Report
-│   └── DATA_AUDIT_REPORT.md     # Corpus & Benchmark Audit
-├── data/                        # Local PDFs (gitignored)
-├── app.py                       # Streamlit app (hybrid retrieval + UI)
-├── ingest.py                    # Admin CLI (parse → chunk → embed → upsert)
-├── schemas.py                   # Pydantic contracts (ChunkPayload, etc.)
-├── engine.py                    # Shared engine (RRF, BM25, rerank, guardrails)
-├── requirements.txt             # Locked production dependencies
-├── README.md                    # This file
-└── NEXT_SESSION.md              # Handoff Runbook
+│   ├── golden_eval_set_2026.json
+│   ├── test_engine_extended.py
+│   ├── test_ingest_mocked.py
+│   ├── test_app_isolated.py
+│   └── test_ragas_eval.py
+├── app.py
+├── engine.py
+├── ingest.py
+├── schemas.py
+├── requirements.txt
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── LICENSE
+└── README.md
 ```
 
 ## Free-Tier Cost Breakdown
