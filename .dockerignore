@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.git/
+.gitignore
+.idea/
+.vscode/
+tests/__pycache__/
+*.log
+eval_metrics.json
+eval_results.txt

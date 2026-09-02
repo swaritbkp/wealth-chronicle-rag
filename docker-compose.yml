@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  terminal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wealthchronicle_terminal
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+    ports:
+      - "8501:8501"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - QDRANT_URL=${QDRANT_URL:-}
+      - QDRANT_READ_KEY=${QDRANT_READ_KEY:-}
+      - QDRANT_ADMIN_KEY=${QDRANT_ADMIN_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./qdrant_local_storage:/app/qdrant_local_storage
+      - ./telemetry.db:/app/telemetry.db
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wealthchronicle_admin
+    command: ["streamlit", "run", "admin_ingest_app.py", "--server.port=8502", "--server.address=0.0.0.0", "--server.headless=true"]
+    ports:
+      - "8502:8502"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - QDRANT_URL=${QDRANT_URL:-}
+      - QDRANT_READ_KEY=${QDRANT_READ_KEY:-}
+      - QDRANT_ADMIN_KEY=${QDRANT_ADMIN_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./qdrant_local_storage:/app/qdrant_local_storage
+      - ./telemetry.db:/app/telemetry.db
+      - ./config:/app/config:ro
+    restart: unless-stopped

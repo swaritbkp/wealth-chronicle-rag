@@ -113,6 +113,19 @@ Access the admin management cockpit at `http://localhost:8502`.
 .\.venv\Scripts\python.exe ingest.py data/wealth_edition.pdf 2026-08-24
 ```
 
+### 4.4 Run with Docker Compose (Dual Service)
+
+```bash
+# Launch both Public Terminal (8501) and Admin Cockpit (8502)
+docker compose up --build -d
+
+# Check service status
+docker compose ps
+
+# View logs
+docker compose logs -f
+```
+
 ---
 
 ## 5. Verification & Benchmark Testing
