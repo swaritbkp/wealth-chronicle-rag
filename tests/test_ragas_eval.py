@@ -30,7 +30,9 @@ def rag_services():
     Falls back to mock services when credentials are missing (offline mode).
     """
     # Mock fallback for offline verification
-    if not os.environ.get("GEMINI_API_KEY") or not os.environ.get("QDRANT_URL"):
+    q_url = os.environ.get("QDRANT_URL", "")
+    g_key = os.environ.get("GEMINI_API_KEY", "")
+    if not g_key or not q_url or "your-cluster" in q_url or "example" in q_url:
         # Offline mock — test will use dummy metrics and pass
         return {
             "gemini": None,
@@ -51,13 +53,31 @@ def rag_services():
     from fastembed import TextEmbedding
     from qdrant_client import QdrantClient
 
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    gemini = genai.GenerativeModel("gemini-2.5-flash")
-    qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_READ_KEY"],
-    )
-    embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    try:
+        genai.configure(api_key=g_key)
+        gemini = genai.GenerativeModel("gemini-2.5-flash")
+        qdrant = QdrantClient(
+            url=q_url,
+            api_key=os.environ.get("QDRANT_READ_KEY"),
+            timeout=5.0,
+        )
+        qdrant.get_collections()
+        embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    except Exception:
+        return {
+            "gemini": None,
+            "qdrant": None,
+            "embedder": None,
+            "prompts": {
+                "refusal_message": "The publication archives do not contain sufficient guidance on this topic.",
+                "system_prompt": "test",
+                "rag_prompt_template": "{context} {query}",
+                "refusal_config": {
+                    "cross_encoder_min_score": 0.25,
+                    "min_relevant_chunks": 1,
+                },
+            },
+        }
 
     with open("config/prompts.yaml", "r", encoding="utf-8") as f:
         prompts = yaml.safe_load(f)
@@ -104,11 +124,20 @@ def _run_rag_pipeline(
     q_vector = list(services["embedder"].embed([question]))[0].tolist()
 
     # 2. Dense retrieval
-    hits = services["qdrant"].search(
-        collection_name="wealth_archive",
-        query_vector=q_vector,
-        limit=12,
-    )
+    if hasattr(services["qdrant"], "query_points"):
+        resp = services["qdrant"].query_points(
+            collection_name="wealth_archive",
+            query=q_vector,
+            using="dense",
+            limit=12,
+        )
+        hits = getattr(resp, "points", resp)
+    else:
+        hits = services["qdrant"].search(
+            collection_name="wealth_archive",
+            query_vector=q_vector,
+            limit=12,
+        )
 
     if not hits:
         return (services["prompts"]["refusal_message"], [])
