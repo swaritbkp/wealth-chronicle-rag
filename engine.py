@@ -254,6 +254,62 @@ def compute_query_embeddings(
     return dense_vec, indices, values
 
 
+_STORAGE_MODE: str = "CLOUD"
+
+
+def get_storage_mode() -> str:
+    """Returns 'CLOUD' or 'LOCAL_DISK' indicating active Qdrant storage mode."""
+    global _STORAGE_MODE
+    return _STORAGE_MODE
+
+
+def set_storage_mode(mode: str) -> None:
+    """Sets active storage mode."""
+    global _STORAGE_MODE
+    _STORAGE_MODE = mode
+
+
+def get_qdrant_client(
+    url: str | None = None,
+    api_key: str | None = None,
+    local_path: str = "./qdrant_local_storage",
+    timeout: float = 5.0,
+) -> tuple[QdrantClient, str]:
+    """Initialize QdrantClient with automatic fallback to local disk storage.
+
+    1. Attempts connection to cloud cluster if URL is provided and not placeholder.
+    2. Tests connection responsiveness.
+    3. If cloud unreachable (DNS 11001, timeout, socket error), initializes local disk-backed QdrantClient.
+
+    Returns:
+        tuple: (client, "CLOUD" | "LOCAL_DISK")
+    """
+    global _STORAGE_MODE
+
+    # If no URL or placeholder URL, immediately fall back to local disk
+    if not url or "your-cluster" in url or "example" in url:
+        logger.info(f"Using local disk-backed Qdrant storage at {local_path}")
+        Path(local_path).mkdir(parents=True, exist_ok=True)
+        client = QdrantClient(path=local_path)
+        _STORAGE_MODE = "LOCAL_DISK"
+        return client, _STORAGE_MODE
+
+    try:
+        client = QdrantClient(url=url, api_key=api_key, timeout=timeout)
+        # Fast test connection
+        client.get_collections()
+        _STORAGE_MODE = "CLOUD"
+        return client, "CLOUD"
+    except Exception as e:
+        logger.warning(
+            f"Qdrant Cloud connection failed ({e}). Falling back to local disk storage at {local_path}."
+        )
+        Path(local_path).mkdir(parents=True, exist_ok=True)
+        client = QdrantClient(path=local_path)
+        _STORAGE_MODE = "LOCAL_DISK"
+        return client, "LOCAL_DISK"
+
+
 def clear_embedding_cache() -> None:
     """Clear query embedding LRU caches."""
     compute_query_dense_embedding.cache_clear()

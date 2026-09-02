@@ -19,6 +19,9 @@ import streamlit as st
 from fastembed import SparseTextEmbedding, TextEmbedding
 from qdrant_client import QdrantClient, models
 
+from engine import (
+    get_qdrant_client,
+)
 from ingest import (
     COLLECTION_NAME,
     clean_extracted_text,
@@ -32,6 +35,10 @@ from ingest import (
     validate_extraction,
 )
 from schemas import ChunkPayload
+from telemetry import (
+    fetch_recent_audit_logs,
+    get_audit_summary_stats,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Configuration & Admin Theme Styling
@@ -98,12 +105,11 @@ st.markdown(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def get_qdrant_admin_client() -> tuple[QdrantClient | None, str | None]:
-    """Initialize Qdrant client using admin credentials from secrets or environment."""
+def get_qdrant_admin_client() -> tuple[QdrantClient, str]:
+    """Initialize Qdrant client using admin credentials with automatic local disk fallback."""
     qdrant_url = (
         st.secrets.get("QDRANT_URL")
         or os.environ.get("QDRANT_URL")
-        or "http://localhost:6333"
     )
     admin_key = (
         st.secrets.get("QDRANT_ADMIN_KEY")
@@ -113,12 +119,7 @@ def get_qdrant_admin_client() -> tuple[QdrantClient | None, str | None]:
         or st.secrets.get("QDRANT_READ_KEY")
         or os.environ.get("QDRANT_READ_KEY")
     )
-
-    try:
-        client = QdrantClient(url=qdrant_url, api_key=admin_key)
-        return client, None
-    except Exception as e:
-        return None, str(e)
+    return get_qdrant_client(url=qdrant_url, api_key=admin_key)
 
 
 @st.cache_resource
@@ -129,7 +130,7 @@ def init_embedding_models():
     return dense_model, sparse_model
 
 
-client, client_err = get_qdrant_admin_client()
+client, storage_mode = get_qdrant_admin_client()
 dense_model, sparse_model = init_embedding_models()
 
 
@@ -366,19 +367,23 @@ st.markdown("##### *Corpus Ingestion, FastEmbed Vectorization & Cluster Diagnost
 diag = get_cluster_diagnostics(client)
 
 with st.container(border=True):
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
     with col1:
         status_html = '<span class="cluster-status-online">● ONLINE</span>' if diag["online"] else '<span class="cluster-status-offline">● OFFLINE</span>'
-        st.markdown(f"**Qdrant Cloud:** {status_html}", unsafe_allow_html=True)
+        mode_label = "Cloud Cluster" if storage_mode == "CLOUD" else "Local Disk"
+        st.markdown(f"**Qdrant:** {status_html} ({mode_label})", unsafe_allow_html=True)
         if diag.get("error"):
             st.caption(f"Error: {diag['error']}")
         else:
-            st.caption(f"Collection: `{COLLECTION_NAME}` | Host: AWS eu-central-1")
+            host_info = "AWS eu-central-1" if storage_mode == "CLOUD" else "./qdrant_local_storage"
+            st.caption(f"Collection: `{COLLECTION_NAME}` | Host: {host_info}")
     with col2:
-        st.metric("Total Points", f"{diag['points']:,}")
+        st.metric("Storage Mode", storage_mode)
     with col3:
-        st.metric("Indexed Editions", f"{diag['editions']}")
+        st.metric("Total Points", f"{diag['points']:,}")
     with col4:
+        st.metric("Indexed Editions", f"{diag['editions']}")
+    with col5:
         process = psutil.Process()
         ram_mb = process.memory_info().rss / (1024 * 1024)
         st.metric("Admin RAM RSS", f"{ram_mb:.1f} MB")
@@ -548,3 +553,33 @@ with maintenance_col2:
         if st.button("Open Purge Dialog", use_container_width=True):
             if client and hasattr(st, "dialog"):
                 purge_collection_modal(client)
+
+st.divider()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Section 5: Retrieval Telemetry & Audit Logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.markdown("### 📜 5. Retrieval Telemetry & Audit Trail")
+st.caption("Persistent SQLite audit log of recent user queries, gating decisions, latency, and hit scores.")
+
+audit_stats = get_audit_summary_stats()
+with st.container(border=True):
+    stat1, stat2, stat3, stat4 = st.columns(4)
+    with stat1:
+        st.metric("Total Queries Logged", f"{audit_stats['total_queries']:,}")
+    with stat2:
+        st.metric("Passed Gate", f"{audit_stats['passed']:,}")
+    with stat3:
+        st.metric("Refused Queries", f"{audit_stats['refused']:,}")
+    with stat4:
+        st.metric("Avg Latency", f"{audit_stats['avg_latency_ms']} ms")
+
+with st.expander("🔍 View Recent Audit Transactions", expanded=True):
+    logs = fetch_recent_audit_logs(limit=50)
+    if not logs:
+        st.info("No query transactions recorded in telemetry database yet.")
+    else:
+        st.dataframe(logs, use_container_width=True)
+

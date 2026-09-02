@@ -18,12 +18,14 @@ import google.generativeai as genai
 import psutil
 import streamlit as st
 from fastembed import SparseTextEmbedding, TextEmbedding
-from qdrant_client import QdrantClient, models
+from qdrant_client import models
 
 from engine import (
     GeminiRateLimiter,
     QueryTrace,
     check_memory_usage,
+    get_qdrant_client,
+    get_storage_mode,
     hybrid_search,
     load_and_validate_prompts,
     rerank_candidates,
@@ -33,6 +35,7 @@ from engine import (
     validate_citations,
 )
 from schemas import ChunkPayload, RerankedPassage
+from telemetry import log_query_audit
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Configuration & Terminal Theme Styling
@@ -161,11 +164,10 @@ def init_services():
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
-    # Qdrant client (read-only key for public plane)
-    qdrant_client = QdrantClient(
-        url=st.secrets["QDRANT_URL"],
-        api_key=st.secrets["QDRANT_READ_KEY"],
-    )
+    # Qdrant client (automatic cloud connection with local disk fallback)
+    qdrant_url = st.secrets.get("QDRANT_URL") or os.environ.get("QDRANT_URL")
+    qdrant_key = st.secrets.get("QDRANT_READ_KEY") or os.environ.get("QDRANT_READ_KEY")
+    qdrant_client, _ = get_qdrant_client(url=qdrant_url, api_key=qdrant_key)
 
     # FastEmbed - Dense
     dense_embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -362,7 +364,7 @@ with st.sidebar:
         with col1:
             st.metric("RAM RSS", f"{rss_mb:.1f} MB")
         with col2:
-            st.metric("Reranker", "TinyBERT" if ranker_available else "RRF Only")
+            st.metric("Storage", get_storage_mode())
 
     st.divider()
 
@@ -684,9 +686,17 @@ if user_query:
                 # Render Citation Expander
                 render_citation_expander(citations, message_idx=len(st.session_state["messages"]))
 
-            # Finalize Trace
+            # Finalize Trace & Persistent SQLite Telemetry Log
             trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
             trace.emit()
+            log_query_audit(
+                query_text=user_query,
+                storage_mode=get_storage_mode(),
+                top_score=top_score,
+                gate_status="REFUSED" if refused else "PASSED",
+                latency_ms=trace.total_ms,
+                chunks_retrieved_count=len(citations),
+            )
 
             # Append assistant message
             assistant_msg = {

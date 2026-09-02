@@ -45,8 +45,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Build & Distribution
-dist/
-build/
-*.egg-info/
+# Local Storage & Telemetry Database
+qdrant_local_storage/
+telemetry.db
+telemetry.db-journal
+telemetry.db-wal
 

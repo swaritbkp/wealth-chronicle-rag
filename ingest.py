@@ -833,13 +833,14 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
     except TypeError:
         raise ValueError(f"Invalid edition_date format: {edition_date}. Expected YYYY-MM-DD")
 
-    # Get Qdrant client if not provided
+    # Get Qdrant client if not provided (with automatic local disk fallback)
     if client is None:
+        from engine import get_qdrant_client
+
         qdrant_url = os.environ.get("QDRANT_URL")
         qdrant_key = os.environ.get("QDRANT_ADMIN_KEY") or os.environ.get("QDRANT_API_KEY")
-        if not qdrant_url:
-            raise ValueError("QDRANT_URL environment variable not set")
-        client = QdrantClient(url=qdrant_url, api_key=qdrant_key)
+        client, mode = get_qdrant_client(url=qdrant_url, api_key=qdrant_key)
+        print(f"[*] Connected to Qdrant (Storage mode: {mode})")
 
     print(f"[*] Parsing {pdf_path} (Edition: {edition_date})...")
 
