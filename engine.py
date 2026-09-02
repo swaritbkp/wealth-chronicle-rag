@@ -37,7 +37,7 @@ except ImportError:
 from qdrant_client import QdrantClient, models
 from qdrant_client.models import SparseVector
 
-from schemas import ChunkPayload, RerankedPassage, SearchResult
+from schemas import ChunkPayload, RerankedPassage, SearchResult, CitationMetadata, GroundedAnswer
 
 import re
 
@@ -823,6 +823,182 @@ def synthesize_answer(
         return stream_synthesize_answer(model, prompt, rate_limiter, generation_config)
     return safe_generate(
         model, prompt, rate_limiter or GeminiRateLimiter(14), generation_config
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRUCTURED GENERATION (Gemini JSON Mode + Pydantic Validation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+GROUNDING_SYSTEM_PROMPT = """
+You are WealthChronicle AI, an institutional-grade financial research assistant.
+Your task is to synthesize a structured, verifiably grounded answer from the provided context passages.
+
+OUTPUT REQUIREMENTS:
+1. Return ONLY valid JSON matching the GroundedAnswer schema.
+2. Every factual claim MUST have at least one citation span with exact character offsets.
+3. Citation spans must reference the provided context passages by edition_date and page_number.
+4. Numerical facts (rates, percentages, amounts, dates) must be extracted exactly as stated.
+5. If context is insufficient, set confidence="low" and provide a refusal_reason.
+
+CITATION FORMAT:
+- Use the exact passage text from context for quoted_text
+- char_start/char_end are character offsets within the source passage text
+- Include edition_date and page_number for every citation
+"""
+
+
+def build_structured_generation_prompt(
+    context_passages: list[RerankedPassage],
+    query: str,
+    system_prompt: str | None = None,
+) -> str:
+    """Build prompt for structured JSON generation with citation requirements."""
+    sys_prompt = system_prompt or GROUNDING_SYSTEM_PROMPT
+
+    # Format context with explicit passage identifiers and full text
+    context_blocks = []
+    for i, p in enumerate(context_passages, 1):
+        block = f"""[PASSAGE {i}]
+Edition: {p.payload.edition_date}
+Page: {p.payload.page_number}
+Section: {p.payload.article_title or 'Untitled'}
+Text: {p.text}"""
+        context_blocks.append(block)
+
+    context_str = "\n\n---\n\n".join(context_blocks)
+
+    return f"""{sys_prompt}
+
+CONTEXT PASSAGES:
+{context_str}
+
+USER QUERY:
+{query}
+
+Generate a GroundedAnswer JSON object. Ensure every claim has citations with exact character spans from the passages above."""
+
+
+def get_generation_config_for_structured_output(temperature: float = 0.1, top_p: float = 0.95) -> dict:
+    """Get generation config for Gemini structured JSON output."""
+    return {
+        "response_mime_type": "application/json",
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": 40,
+        "candidate_count": 1,
+    }
+
+
+def extract_citation_spans(
+    answer: GroundedAnswer,
+    context_passages: list[RerankedPassage],
+) -> list[CitationMetadata]:
+    """Convert GroundedAnswer claims to CitationMetadata for UI rendering."""
+    citations = []
+    seen = set()
+
+    for claim in answer.claims:
+        for span in claim.citations:
+            key = (span.edition_date, span.page_number, span.char_start, span.char_end)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # Find the matching passage for cross_encoder_score
+            passage = next(
+                (p for p in context_passages
+                 if str(p.payload.edition_date) == str(span.edition_date)
+                 and p.payload.page_number == span.page_number),
+                None
+            )
+
+            citations.append(CitationMetadata(
+                edition_date=span.edition_date,
+                page_number=span.page_number,
+                article_title=span.article_title,
+                cross_encoder_score=passage.cross_encoder_score if passage else 0.0,
+                excerpt_preview=span.quoted_text[:300],
+            ))
+
+    return citations
+
+
+def synthesize_structured_answer(
+    model: Any,
+    prompt: str,
+    rate_limiter: GeminiRateLimiter | None = None,
+    generation_config: dict | None = None,
+) -> GroundedAnswer:
+    """Generate structured answer using Gemini JSON mode with Pydantic validation."""
+    from schemas import GroundedAnswer
+
+    if rate_limiter:
+        rate_limiter.acquire()
+
+    # Import exception types
+    try:
+        from google.api_core import exceptions as google_exceptions
+        from google.genai import errors as genai_errors
+    except ImportError:
+        google_exceptions = None  # type: ignore[assignment]
+        genai_errors = None  # type: ignore[assignment]
+
+    if generation_config is None:
+        generation_config = get_generation_config_for_structured_output()
+
+    for attempt in range(3):
+        try:
+            response = model.generate_content(prompt, generation_config=generation_config)
+            raw_json = response.text
+
+            # Parse and validate with Pydantic
+            parsed = GroundedAnswer.model_validate_json(raw_json)
+            return parsed
+
+        except Exception as e:
+            is_429 = False
+            if google_exceptions and isinstance(e, google_exceptions.ResourceExhausted):
+                is_429 = True
+            elif genai_errors and isinstance(e, genai_errors.APIError):
+                if getattr(e, "code", None) == 429 or "429" in str(e) or "quota" in str(e).lower():
+                    is_429 = True
+            elif "429" in str(e) or "quota" in str(e).lower() or "ResourceExhausted" in type(e).__name__:
+                is_429 = True
+
+            if is_429:
+                if attempt < 2:
+                    wait = 2**attempt * 5
+                    logging.warning(f"Gemini 429 — backing off {wait}s (attempt {attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                else:
+                    logging.warning("Gemini 429 — all 3 attempts exhausted")
+                    # Return a refusal structured answer
+                    return GroundedAnswer(
+                        answer="The service is temporarily busy. Please try again in a few moments.",
+                        claims=[],
+                        citations=[],
+                        confidence="low",
+                        refusal_reason="Rate limit exhausted after 3 retries",
+                    )
+            else:
+                # JSON parsing or validation error - log and retry once
+                if attempt == 0:
+                    logging.warning(f"Structured generation failed (attempt 1/3): {e}. Retrying with stricter prompt.")
+                    # Add stricter instruction to prompt
+                    prompt += "\n\nCRITICAL: Output MUST be valid JSON matching GroundedAnswer schema exactly."
+                    continue
+                raise
+
+    # Fallback refusal
+    return GroundedAnswer(
+        answer="The service is temporarily busy. Please try again in a few moments.",
+        claims=[],
+        citations=[],
+        confidence="low",
+        refusal_reason="Generation failed after retries",
     )
 
 

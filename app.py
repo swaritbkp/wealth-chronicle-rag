@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tempfile
 import uuid
 from datetime import date, datetime, timezone
@@ -23,19 +22,19 @@ from qdrant_client import models
 from engine import (
     GeminiRateLimiter,
     QueryTrace,
-    TimedStreamWrapper,
+    build_structured_generation_prompt,
     check_memory_usage,
+    extract_citation_spans,
     get_qdrant_client,
     get_storage_mode,
     hybrid_search,
     load_and_validate_prompts,
     rerank_candidates,
     should_refuse,
-    synthesize_answer,
+    synthesize_structured_answer,
     timer,
-    validate_citations,
 )
-from schemas import ChunkPayload, RerankedPassage
+from schemas import ChunkPayload, RerankedPassage, GroundedAnswer
 from telemetry import log_query_audit
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,81 +625,63 @@ if user_query:
                 trace.answer_length_chars = len(answer_text)
                 trace.citation_count = 0
             else:
-                # ─── TASK-4.3: Structured Prompt Assembly & Generation ───
+                # ─── STRUCTURED GENERATION WITH GEMINI JSON MODE ───
                 with timer(trace, "prompt_assembly_ms"):
                     reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
-                    context_passages = "\n\n".join(
-                        [
-                            f"[Passage {i} | Edition: {p.payload.edition_date} | Page: {p.payload.page_number} | Section: {p.payload.article_title or 'Untitled'}]\n{p.text}"
-                            for i, p in enumerate(reranked_sorted, start=1)
-                        ]
+                    # Build structured prompt with passage identifiers for citation grounding
+                    full_prompt = build_structured_generation_prompt(
+                        context_passages=reranked_sorted,
+                        query=user_query,
+                        system_prompt=prompts["system_prompt"],
                     )
-                    if "rag_synthesis_template" in prompts:
-                        full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_synthesis_template"].format(
-                            context_passages=context_passages, query=user_query
-                        )
-                    else:
-                        context_str = "\n\n---\n\n".join(
-                            [f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted]
-                        )
-                        full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_prompt_template"].format(
-                            context=context_str, query=user_query
-                        )
 
                 guardrails = prompts.get("guardrails", {})
                 generation_config = {
+                    "response_mime_type": "application/json",
                     "temperature": guardrails.get("temperature", 0.1),
                     "top_p": guardrails.get("top_p", 0.95),
+                    "top_k": 40,
+                    "candidate_count": 1,
                 }
 
-                # Real-time token streaming with TTFT tracking
-                stream_wrapper = TimedStreamWrapper(
-                    synthesize_answer(
-                        gemini_model,
-                        full_prompt,
-                        rate_limiter,
-                        generation_config=generation_config,
-                        stream=True,
-                    )
+                # Structured generation with Pydantic validation
+                structured_answer: GroundedAnswer = synthesize_structured_answer(
+                    gemini_model,
+                    full_prompt,
+                    rate_limiter,
+                    generation_config=generation_config,
                 )
-                raw_stream_out = st.write_stream(stream_wrapper)
-                answer_text = str(raw_stream_out) if isinstance(raw_stream_out, str) else "".join(str(x) for x in raw_stream_out)
-                trace.llm_ttft_ms = stream_wrapper.ttft_ms
-                trace.llm_total_ms = stream_wrapper.completion_ms
 
-                # Citation Verification
-                citations_valid, ungrounded_dates = validate_citations(answer_text, reranked_sorted)
-                if not citations_valid:
-                    logging.warning(
-                        f"CITATION_HALLUCINATION: Answer contains ungrounded citations: {ungrounded_dates}"
-                    )
-                    answer_text += "\n\n*Note: Citations verified against retrieved archive passages.*"
-                trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
+                answer_text = structured_answer.answer
+                trace.llm_total_ms = 0  # Not streaming, so no TTFT tracking for now
+
+                # Citation Verification - now using structured citations
+                citation_metadata = extract_citation_spans(structured_answer, reranked_sorted)
+
+                # Convert structured citations to legacy format for UI compatibility
+                citations = []
+                for c in citation_metadata:
+                    citations.append({
+                        "edition_date": str(c.edition_date),
+                        "page_number": c.page_number,
+                        "cross_encoder_score": c.cross_encoder_score,
+                        "text": c.excerpt_preview,
+                        "article_title": c.article_title,
+                        "has_table": False,  # Not tracked in CitationMetadata
+                    })
 
                 # Display Telemetry Ribbon
                 trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
                 telemetry_data = {
                     "total_ms": trace.total_ms,
-                    "ttft_ms": trace.llm_ttft_ms,
+                    "ttft_ms": 0,
                     "top_score": top_score,
                     "time_decay": time_decay,
                     "refused": False,
                 }
                 render_telemetry_ribbon(telemetry_data)
                 trace.answer_length_chars = len(answer_text)
-
-                # Prepare citations
-                citations = [
-                    {
-                        "edition_date": str(p.payload.edition_date),
-                        "page_number": p.payload.page_number,
-                        "cross_encoder_score": p.cross_encoder_score,
-                        "text": p.text,
-                        "article_title": p.payload.article_title,
-                        "has_table": getattr(p.payload, "has_table", False),
-                    }
-                    for p in reranked_sorted
-                ]
+                trace.citation_count = len(citations)
 
                 # Render Citation Expander
                 render_citation_expander(citations, message_idx=len(st.session_state["messages"]))

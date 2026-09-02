@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -116,6 +117,52 @@ class CitationMetadata(BaseModel):
     excerpt_preview: Annotated[str, Field(max_length=300, description="First 300 chars of chunk text for UI preview")]
 
 
+# ─── Structured Generation Domain ──────────────────────────────────────
+
+
+class CitationSpan(BaseModel):
+    """Character-level citation span for precise grounding verification."""
+
+    edition_date: date
+    page_number: int
+    article_title: str | None
+    char_start: int = Field(ge=0, description="Start character offset in source chunk text")
+    char_end: int = Field(ge=0, description="End character offset in source chunk text")
+    quoted_text: str = Field(description="Exact text span from source chunk")
+
+
+class GroundedClaim(BaseModel):
+    """A single factual claim with its supporting citations."""
+
+    claim: str = Field(description="The factual statement being made")
+    citations: list[CitationSpan] = Field(min_length=1, description="One or more citation spans supporting this claim")
+    claim_type: Literal["numerical", "categorical", "procedural", "date", "reference"] = Field(
+        description="Type of claim for specialized validation"
+    )
+
+
+class GroundedAnswer(BaseModel):
+    """Structured answer with verifiable citations and confidence calibration."""
+
+    answer: str = Field(description="Final synthesized answer in markdown")
+    claims: list[GroundedClaim] = Field(default_factory=list, description="Decomposed factual claims with citations")
+    citations: list[CitationMetadata] = Field(default_factory=list, description="Aggregated citation metadata for UI")
+    confidence: Literal["high", "medium", "low"] = Field(description="Overall confidence in answer correctness")
+    refusal_reason: str | None = Field(default=None, description="Present only if confidence=low and answer is refusal")
+    key_takeaway: str | None = Field(default=None, max_length=500, description="One-sentence actionable summary")
+    numerical_facts: list[dict] = Field(default_factory=list, description="Extracted numerical facts for validation")
+
+
+class GenerationConfigSchema(BaseModel):
+    """Schema for Gemini structured generation configuration."""
+
+    response_mime_type: Literal["application/json"] = "application/json"
+    temperature: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.95, ge=0.0, le=1.0)
+    top_k: int = Field(default=40, ge=1, le=100)
+    candidate_count: int = Field(default=1, ge=1, le=4)
+
+
 # ─── Evaluation Domain ──────────────────────────────────────────────
 
 
@@ -182,3 +229,44 @@ class EvaluationItem(BaseModel):
         if not self.source_pages:
             raise ValueError("source_pages must not be empty for in-domain evaluation items")
         return self
+
+
+# ─── Active Learning / Feedback Domain ─────────────────────────────────
+
+
+class FeedbackLabel(str, Enum):
+    """User feedback labels for answer quality."""
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    CORRECTED = "corrected"
+
+
+class QueryFeedback(BaseModel):
+    """User feedback on a generated answer for active learning."""
+
+    feedback_id: UUID | None = Field(default=None, description="Unique feedback identifier (auto generated if not provided)")
+    query_text: str = Field(..., min_length=5, max_length=1000, description="Original user query")
+    answer_text: str = Field(..., description="Generated answer text")
+    label: FeedbackLabel = Field(description="User feedback label")
+    corrected_answer: str | None = Field(default=None, description="User-provided correction if label=CORRECTED")
+    citations: list[CitationMetadata] = Field(default_factory=list, description="Citations from the original answer")
+    trace_id: str | None = Field(default=None, description="Link to query trace for debugging")
+    user_id: str | None = Field(default=None, description="Anonymous user identifier")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Feedback submission time")
+    metadata: dict = Field(default_factory=dict, description="Additional context (model version, retrieval params, etc.)")
+
+
+class GoldenSetCandidate(BaseModel):
+    """Candidate for inclusion in golden evaluation set, derived from feedback."""
+
+    question: str = Field(..., min_length=15, max_length=500)
+    ground_truth: str = Field(..., min_length=20, max_length=2000)
+    source_edition_dates: list[date] = Field(default_factory=list)
+    source_pages: list[int] = Field(default_factory=list)
+    category: EvaluationCategory = Field(default=EvaluationCategory.TAX_REGIME)
+    difficulty: Literal["easy", "medium", "hard"] = Field(default="medium")
+    derived_from_feedback_id: UUID = Field(description="Link to originating feedback")
+    reviewer_notes: str | None = Field(default=None, description="Human reviewer notes")
+    status: Literal["pending", "approved", "rejected"] = Field(default="pending")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
