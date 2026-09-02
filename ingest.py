@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+import csv
+import io
 
 import pymupdf4llm
 from fastembed import SparseTextEmbedding, TextEmbedding
@@ -31,13 +33,158 @@ from qdrant_client.models import (
 )
 
 from engine import with_qdrant_retry
-from schemas import ChunkPayload
+from schemas import ChunkPayload, TableChunk, TableSchema
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
 COLLECTION_NAME = "wealth_archive"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TABLE PROCESSING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_markdown_table(table_text: str) -> tuple[list[str], list[list[str]]]:
+    """Parse markdown table into headers and rows.
+    
+    Returns:
+        (headers, rows) where rows is list of lists of cell values
+    """
+    lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
+    if len(lines) < 2:
+        return [], []
+    
+    # Parse header
+    header_line = lines[0]
+    if not header_line.startswith("|") or not header_line.endswith("|"):
+        return [], []
+    
+    headers = [cell.strip() for cell in header_line.strip("|").split("|")]
+    
+    # Find separator line (should be line 1)
+    separator_idx = 1
+    if separator_idx >= len(lines):
+        return headers, []
+    
+    # Parse data rows
+    rows = []
+    for line in lines[separator_idx + 1:]:
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) == len(headers):
+            rows.append(cells)
+    
+    return headers, rows
+
+
+def _infer_column_type(values: list[str]) -> str:
+    """Infer the data type of a column from its values."""
+    if not values:
+        return "string"
+    
+    # Check for currency (₹, $, Rs, etc.)
+    currency_pattern = re.compile(r"[₹$€£]|Rs\.?|INR|USD")
+    if any(currency_pattern.search(v) for v in values[:10]):
+        return "currency"
+    
+    # Check for percentage
+    if any(v.strip().endswith("%") for v in values[:10]):
+        return "percentage"
+    
+    # Check for date
+    date_pattern = re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+    if any(date_pattern.search(v) for v in values[:10]):
+        return "date"
+    
+    # Check for integer
+    int_count = sum(1 for v in values[:20] if v.strip().replace(",", "").replace("-", "").isdigit())
+    if int_count / min(len(values), 20) > 0.8:
+        return "int"
+    
+    # Check for float
+    float_count = 0
+    for v in values[:20]:
+        v_clean = v.strip().replace(",", "")
+        try:
+            float(v_clean)
+            float_count += 1
+        except ValueError:
+            pass
+    if float_count / min(len(values), 20) > 0.8:
+        return "float"
+    
+    return "string"
+
+
+def _markdown_table_to_csv(table_text: str) -> str:
+    """Convert markdown table to CSV string."""
+    headers, rows = _parse_markdown_table(table_text)
+    if not headers:
+        return ""
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def _infer_table_schema(headers: list[str], rows: list[list[str]]) -> TableSchema:
+    """Infer table schema from headers and rows."""
+    if not headers or not rows:
+        return TableSchema(
+            columns=headers,
+            dtypes=["string"] * len(headers),
+            row_count=len(rows),
+            column_count=len(headers),
+        )
+    
+    # Transpose rows to get column values
+    cols: list[tuple[str, ...]] = list(zip(*rows)) if rows else [tuple() for _ in headers]
+    dtypes = [_infer_column_type(list(col)) for col in cols]
+    
+    return TableSchema(
+        columns=headers,
+        dtypes=dtypes,
+        row_count=len(rows),
+        column_count=len(headers),
+    )
+
+
+def _compute_table_hash(csv_text: str) -> str:
+    """Compute SHA256 hash of CSV for deduplication."""
+    return hashlib.sha256(csv_text.encode("utf-8")).hexdigest()[:16]
+
+
+def _extract_table_from_chunk(chunk_text: str) -> str | None:
+    """Extract the markdown table portion from a chunk.
+    
+    Returns the table markdown if found, None otherwise.
+    """
+    lines = chunk_text.split("\n")
+    table_lines = []
+    in_table = False
+    
+    for line in lines:
+        stripped = line.strip()
+        is_table_line = ("|" in stripped) and (stripped.startswith("|") or stripped.count("|") >= 2)
+        is_separator = bool(SEPARATOR_PATTERN.match(line))
+        
+        if is_table_line or is_separator:
+            if not in_table:
+                in_table = True
+            table_lines.append(line)
+        else:
+            if in_table:
+                # End of table
+                break
+    
+    if len(table_lines) >= 2:
+        return "\n".join(table_lines)
+    return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TASK-3.1: Layout-Aware PDF Extraction
@@ -879,7 +1026,7 @@ def ingest_pdf(
 
     # 3-6. Chunk and build payloads
     all_texts: list[str] = []
-    all_payloads: list[ChunkPayload] = []
+    all_payloads: list[ChunkPayload] = []  # TableChunk inherits from ChunkPayload
     all_point_ids: list[str] = []
 
     for item in pages:
@@ -920,16 +1067,53 @@ def ingest_pdf(
 
             has_table = ("|" in chunk_text) and _has_table_data_rows(chunk_text)
 
-            payload = ChunkPayload(
-                chunk_id=chunk_id,
-                edition_date=edition_date,
-                page_number=page_number,
-                article_title=article_title,
-                text=chunk_text,
-                has_table=has_table,
-                char_count=char_count,
-                word_count=word_count,
-            )
+            # For table chunks, create structured TableChunk with CSV + schema
+            payload: ChunkPayload  # Type annotation for mypy (TableChunk inherits from ChunkPayload)
+            if has_table:
+                table_md = _extract_table_from_chunk(chunk_text)
+                if table_md:
+                    headers, rows = _parse_markdown_table(table_md)
+                    table_csv = _markdown_table_to_csv(table_md)
+                    table_schema = _infer_table_schema(headers, rows)
+                    table_hash = _compute_table_hash(table_csv) if table_csv else None
+
+                    payload = TableChunk(
+                        chunk_id=chunk_id,
+                        edition_date=edition_date,
+                        page_number=page_number,
+                        article_title=article_title,
+                        text=chunk_text,
+                        has_table=True,
+                        char_count=char_count,
+                        word_count=word_count,
+                        table_markdown=table_md,
+                        table_csv=table_csv,
+                        table_schema=table_schema,
+                        table_hash=table_hash,
+                    )
+                else:
+                    # Fallback to regular chunk if table extraction fails
+                    payload = ChunkPayload(
+                        chunk_id=chunk_id,
+                        edition_date=edition_date,
+                        page_number=page_number,
+                        article_title=article_title,
+                        text=chunk_text,
+                        has_table=has_table,
+                        char_count=char_count,
+                        word_count=word_count,
+                    )
+            else:
+                payload = ChunkPayload(
+                    chunk_id=chunk_id,
+                    edition_date=edition_date,
+                    page_number=page_number,
+                    article_title=article_title,
+                    text=chunk_text,
+                    has_table=has_table,
+                    char_count=char_count,
+                    word_count=word_count,
+                )
 
             all_texts.append(chunk_text)
             all_payloads.append(payload)

@@ -420,3 +420,45 @@ def get_audit_summary_stats(db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
         logger.warning(f"Failed to compute audit summary stats: {e}")
 
     return {"total_queries": 0, "passed": 0, "refused": 0, "avg_latency_ms": 0.0, "avg_ttft_ms": 0.0}
+
+
+# ─── Drift Monitor Integration ──────────────────────────────────────────
+
+
+def log_query_for_drift(
+    query_text: str,
+    db_path: str = "drift_queries.jsonl",
+) -> None:
+    """Append query to drift detection log (JSONL format for batch processing)."""
+    try:
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "query_text": query_text,
+        }
+        with open(db_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        logger.warning(f"Failed to log query for drift detection: {e}")
+
+
+def load_drift_queries(db_path: str = "drift_queries.jsonl") -> list[str]:
+    """Load queries from drift detection log."""
+    if not Path(db_path).exists():
+        return []
+
+    queries = []
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    queries.append(record.get("query_text", ""))
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        logger.warning(f"Failed to load drift queries: {e}")
+
+    return queries

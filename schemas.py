@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
+import uuid
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -71,6 +72,32 @@ class ChunkPayload(BaseModel):
         if isinstance(v, str):
             return date.fromisoformat(v)
         return v
+
+
+class TableSchema(BaseModel):
+    """Structured schema for a parsed table."""
+
+    columns: list[str] = Field(description="Column headers")
+    dtypes: list[str] = Field(description="Inferred data types per column (int, float, string, currency, percentage, date)")
+    row_count: int = Field(ge=0, description="Number of data rows")
+    column_count: int = Field(ge=0, description="Number of columns")
+
+
+class TableChunk(ChunkPayload):
+    """Extended chunk payload for table-structured data with dual representation."""
+
+    # Table-specific fields
+    table_markdown: str = Field(default="", description="Original markdown table representation")
+    table_csv: str = Field(default="", description="CSV representation for exact numerical lookup")
+    table_schema: TableSchema | None = Field(default=None, description="Structured schema with types")
+    table_hash: str | None = Field(default=None, description="SHA256 hash of CSV for deduplication")
+
+    # Override text to include markdown + CSV preview
+    @field_validator("text", mode="before")
+    @classmethod
+    def build_table_text(cls, v, info):
+        # If we have table_markdown, use it as primary text
+        return v or info.data.get("table_markdown", "")
 
 
 # ─── Retrieval Domain ────────────────────────────────────────────────
@@ -270,3 +297,56 @@ class GoldenSetCandidate(BaseModel):
     reviewer_notes: str | None = Field(default=None, description="Human reviewer notes")
     status: Literal["pending", "approved", "rejected"] = Field(default="pending")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ─── Query Drift Monitoring Domain ───────────────────────────────────────
+
+
+class DriftSeverity(str, Enum):
+    """Severity levels for detected query drift."""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class DriftCluster(BaseModel):
+    """A cluster of similar queries detected via embedding clustering."""
+
+    cluster_id: int = Field(description="Cluster identifier from HDBSCAN (-1 for noise)")
+    centroid_embedding: list[float] = Field(description="Mean embedding of cluster members")
+    query_count: int = Field(ge=1, description="Number of queries in this cluster")
+    sample_queries: list[str] = Field(default_factory=list, description="Up to 5 representative queries")
+    avg_distance_to_centroid: float = Field(ge=0.0, description="Average cosine distance to centroid")
+    first_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    is_new: bool = Field(default=False, description="True if cluster is newly detected vs baseline")
+
+
+class DriftReport(BaseModel):
+    """Report from drift detection analysis."""
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    total_queries_analyzed: int = Field(ge=0)
+    num_clusters: int = Field(ge=0)
+    num_noise_queries: int = Field(ge=0)
+    new_clusters: list[DriftCluster] = Field(default_factory=list)
+    severity: DriftSeverity = Field(default=DriftSeverity.NONE)
+    recommendation: str = Field(default="")
+    baseline_coverage: float = Field(default=0.0, description="Fraction of queries matching baseline clusters")
+
+
+class DriftAlert(BaseModel):
+    """Alert for significant query drift."""
+
+    alert_id: UUID = Field(default_factory=lambda: uuid.uuid4(), description="Unique alert identifier")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    severity: DriftSeverity
+    message: str
+    affected_clusters: list[int] = Field(default_factory=list)
+    new_query_samples: list[str] = Field(default_factory=list)
+    acknowledged: bool = Field(default=False)
+    acknowledged_by: str | None = None
+    acknowledged_at: datetime | None = None
