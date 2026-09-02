@@ -22,7 +22,7 @@ graph TD
     end
 
     subgraph "Phase 2 — Core Engine (engine.py)"
-        T2_1["TASK-2.1<br/>BM25 Index Builder"]
+        T2_1["TASK-2.1<br/>BM42 Native Sparse<br/>Hybrid Retrieval"]
         T2_2["TASK-2.2<br/>RRF + Recency<br/>Decay Scorer"]
         T2_3["TASK-2.3<br/>FlashRank Reranker<br/>+ Fallback"]
         T2_4["TASK-2.4<br/>Refusal Evaluator<br/>(θ=0.25)"]

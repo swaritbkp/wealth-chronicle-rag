@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 import psutil
 import yaml
@@ -32,6 +33,9 @@ except ImportError:
     class ResponseHandlingException(Exception):
         pass
 
+
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import SparseVector
 
 from schemas import ChunkPayload, RerankedPassage, SearchResult
 
@@ -203,6 +207,143 @@ def reciprocal_rank_fusion(
 #   - RRF fusion: k=60, with exponential recency decay (alpha=0.35, tau=365)
 #
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def hybrid_search(
+    client: QdrantClient,
+    query: str,
+    dense_embedding_model,
+    sparse_embedding_model,
+    collection_name: str = "wealth_archive",
+    limit: int = 12,
+    reference_date: date | None = None,
+    query_filter: models.Filter | None = None,
+) -> list[dict]:
+    """Execute hybrid search using Qdrant dense and BM42 sparse vectors with RRF + recency decay.
+
+    1. Embed query with dense model (BAAI/bge-small-en-v1.5) and sparse model (BM42).
+    2. Retrieve top-limit dense candidates and top-limit sparse candidates from Qdrant.
+    3. Fuse candidate rankings using RRF (k=60) with exponential temporal decay multiplier.
+    4. Return ranked candidate metadata dicts ready for FlashRank cross-encoder reranking.
+    """
+    if reference_date is None:
+        reference_date = date.today()
+
+    # 1. Generate dense query embedding
+    dense_emb = list(dense_embedding_model.embed([query]))[0]
+    dense_vector = dense_emb.tolist() if hasattr(dense_emb, "tolist") else list(dense_emb)
+
+    # 2. Generate sparse query embedding
+    sparse_emb = list(sparse_embedding_model.embed([query]))[0]
+    if hasattr(sparse_emb, "indices") and hasattr(sparse_emb, "values"):
+        sparse_indices = sparse_emb.indices.tolist() if hasattr(sparse_emb.indices, "tolist") else list(sparse_emb.indices)
+        sparse_values = sparse_emb.values.tolist() if hasattr(sparse_emb.values, "tolist") else list(sparse_emb.values)
+    else:
+        sparse_indices = list(sparse_emb.get("indices", []))
+        sparse_values = list(sparse_emb.get("values", []))
+
+    sparse_vector = SparseVector(indices=sparse_indices, values=sparse_values)
+
+    # 3. Dense search via Qdrant
+    dense_hits: Any = []
+    try:
+        if hasattr(client, "query_points"):
+            resp = client.query_points(
+                collection_name=collection_name,
+                query=dense_vector,
+                using="dense",
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+            dense_hits = getattr(resp, "points", resp)
+        else:
+            dense_hits = client.search(
+                collection_name=collection_name,
+                query_vector=models.NamedVector(name="dense", vector=dense_vector),
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+            )
+    except Exception as e:
+        logger.warning(f"Dense retrieval error: {e}")
+
+    # 4. Sparse search via Qdrant
+    sparse_hits: Any = []
+    try:
+        if hasattr(client, "query_points"):
+            resp = client.query_points(
+                collection_name=collection_name,
+                query=sparse_vector,
+                using="sparse",
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+            sparse_hits = getattr(resp, "points", resp)
+        else:
+            sparse_hits = client.search(
+                collection_name=collection_name,
+                query_vector=models.NamedSparseVector(name="sparse", vector=sparse_vector),
+                query_filter=query_filter,
+                limit=limit,
+                with_payload=True,
+            )
+    except Exception as e:
+        logger.warning(f"Sparse retrieval error: {e}")
+
+    # Build payload map and rank maps
+    all_payloads: dict[str, ChunkPayload] = {}
+    dense_rank_map: dict[str, int] = {}
+    for rank, h in enumerate(dense_hits, start=1):
+        pid = str(h.id)
+        dense_rank_map[pid] = rank
+        if getattr(h, "payload", None) and pid not in all_payloads:
+            try:
+                all_payloads[pid] = ChunkPayload(**h.payload)
+            except Exception:
+                pass
+
+    sparse_rank_map: dict[str, int] = {}
+    for rank, h in enumerate(sparse_hits, start=1):
+        pid = str(h.id)
+        sparse_rank_map[pid] = rank
+        if getattr(h, "payload", None) and pid not in all_payloads:
+            try:
+                all_payloads[pid] = ChunkPayload(**h.payload)
+            except Exception:
+                pass
+
+    # Union of all retrieved point IDs
+    all_ids: set[str] = set(dense_rank_map.keys()) | set(sparse_rank_map.keys())
+
+    fused: list[dict] = []
+    for pid in all_ids:
+        r_d = dense_rank_map.get(pid, float("inf"))
+        r_s = sparse_rank_map.get(pid, float("inf"))
+
+        rrf_score = (1.0 / (RRF_K + r_d)) + (1.0 / (RRF_K + r_s))
+
+        payload = all_payloads.get(pid)
+        if payload:
+            delta_t = (reference_date - payload.edition_date).days
+            recency = 1.0 + RECENCY_ALPHA * math.exp(-delta_t / RECENCY_TAU)
+        else:
+            recency = 1.0
+
+        final_score = rrf_score * recency
+
+        fused.append(
+            {
+                "point_id": pid,
+                "rrf_score": rrf_score,
+                "recency_multiplier": recency,
+                "final_score": final_score,
+            }
+        )
+
+    fused.sort(key=lambda x: x["final_score"], reverse=True)
+    return fused[:limit]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

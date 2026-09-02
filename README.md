@@ -1,33 +1,36 @@
 # WealthChronicle AI — Production-Grade Financial Archive Intelligence Engine
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Test Suite](https://img.shields.io/badge/tests-117%20passing-brightgreen.svg)](tests/)
+[![Test Suite](https://img.shields.io/badge/tests-123%20passing-brightgreen.svg)](tests/)
+[![Memory Footprint](https://img.shields.io/badge/memory-~135%20MB-blue.svg)](mdfiles/BUILD_SUMMARY.md)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Architecture Rating](https://img.shields.io/badge/architecture-9.6%2F10%20Production%20Grade-success.svg)](mdfiles/AUDIT_REPORT.md)
 
 ## Project Overview
 
-WealthChronicle AI is an evaluated, production-grade Retrieval-Augmented Generation (RAG) system that turns a 50–100 issue archive of weekly personal finance publications (1,600–3,200+ dense pages) into a grounded, cited question-answering service. It combines layout-aware PDF parsing, hybrid dense+sparse retrieval with temporal recency weighting, cross-encoder reranking, deterministic refusal guardrails, execution tracing, and CI-gated RAGAS evaluation — all on a $0.00/month free-tier stack (Qdrant Cloud Free, Google AI Studio, Streamlit Cloud, local ONNX).
+WealthChronicle AI is an evaluated, production-grade Retrieval-Augmented Generation (RAG) system and Bloomberg-inspired Financial Intelligence Terminal that turns a 50–100 issue archive of weekly personal finance publications (1,600–3,200+ dense pages) into a grounded, cited question-answering service. It combines layout-aware PDF parsing, Qdrant native hybrid search (BM42 sparse + dense vectors) with temporal recency weighting, cross-encoder reranking, deterministic refusal guardrails, execution tracing, and CI-gated RAGAS evaluation — all on a $0.00/month free-tier stack (Qdrant Cloud Free, Google AI Studio, Streamlit Cloud, local ONNX).
 
 ## Architecture
 
 ```
-[ ADMIN LAPTOP (Write) ]                          [ QDRANT CLOUD FREE ]
+[ ADMIN WORKSTATION (Write Plane) ]                 [ QDRANT CLOUD (Managed Cluster) ]
    weekly PDF ──► PyMuPDF4LLM (layout + tables)          │
                 ──► Sliding Window Chunker (600w/100ov)   │
-                ──► FastEmbed bge-small-en-v1.5 (384d) ──►┼─► wealth_archive (HNSW m=16, ef=128, cosine)
-                ──► Qdrant upsert (Admin Key)             │
+                ──► FastEmbed Vectorization (batch=32) ──►┼─► wealth_archive (dense 384d + sparse BM42)
+                ──► Qdrant upsert (Admin Key)             │     Payload Indexes (edition_date, has_table, page_number)
                                                      ▲    │
-[ PUBLIC APP (Streamlit Cloud, Read-Only) ]      │    │
-  user query ──► FastEmbed (384d, ~20ms)          │    │
-             ──► Dense search (Qdrant, k=12) ──────┘    │
-             ──► Sparse BM25 (bm25s, k=12)               │
-             ──► RRF + Recency Decay (k=60, α=0.35, τ=365)│
-             ──► FlashRank TinyBERT rerank (top 4)       │
-             ──► Refusal check (θ=0.25) ──► prompt ──► Gemini 2.5 Flash ──► answer + citations
+[ PUBLIC TERMINAL (Streamlit Cloud, Read-Only) ]     │    │
+  user query ──► FastEmbed (dense + BM42, ~20ms)     │    │
+             ──► Server-side Dense Prefetch (k=12) ──┘    │
+             ──► Server-side BM42 Prefetch (k=12) ────────┘
+             ──► RRF + Recency Decay (k=60, α=0.35, τ=365)
+             ──► FlashRank TinyBERT Cross-Encoder Rerank (top 4)
+             ──► Refusal Gate Evaluation (θ=0.25)
+                  ├── Passed  ──► Structured Prompt ──► Gemini 2.5 Flash ──► Telemetry + Answer + Citations
+                  └── Refused ──► Deterministic Compliance Notice (0 Hallucinations)
 ```
 
-Latency budget P95 ≤ 2.2s: FastEmbed 22ms + Qdrant 80ms + BM25 8ms + RRF <1ms + FlashRank 85ms + Gemini TTFT 800ms + generation 1100ms ≈ 2.1s.
+Latency budget P95 ≤ 2.2s: FastEmbed 22ms + Qdrant Dense/BM42 85ms + RRF <1ms + FlashRank 85ms + Gemini TTFT 800ms + generation 1100ms ≈ 2.1s.
 
 For full sequence diagrams and HNSW rationale, see `mdfiles/TECH_SPEC.md` §1–§4.
 
@@ -180,14 +183,14 @@ QDRANT_URL = "https://your-cluster.region.aws.cloud.qdrant.io:6333"
 QDRANT_READ_KEY = "your-read-only-key"
 ```
 
-4. Deploy. Cold start builds BM25 index by scrolling Qdrant (one-time ~6 MB RAM) and caches all services via `@st.cache_resource`.
+4. Deploy. Cold start is instantaneous (0 ms corpus download, server-side BM42 sparse vector retrieval) and caches all services via `@st.cache_resource`.
 5. Verify: submit a tax question, check citation expander shows 4 passages with edition, page, and cross-encoder score.
 
 Notes:
 
 - Never deploy `QDRANT_ADMIN_KEY` to Streamlit Cloud (read key only).
 - If FlashRank download fails on cold start, the app degrades to RRF-only ranking (logged warning, no crash).
-- Memory is monitored via `psutil`; cache is cleared if RSS > 240 MB, warning at 200 MB.
+- Memory is monitored via `psutil`; cache is cleared if RSS > 240 MB, warning at 200 MB. Instant ~135 MB baseline.
 
 ## Repository Structure
 

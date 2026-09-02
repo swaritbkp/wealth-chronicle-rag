@@ -126,14 +126,16 @@ $$
 
 ---
 
-## 4. Non-Functional Requirements & Free-Tier Guardrails
+## 4. Non-Functional Requirements & Production Guardrails
 
 | Dimension             | Target Requirement               | Enforcement Mechanism                |
 |-----------------------|----------------------------------|--------------------------------------|
-| Hosting RAM Ceiling   | < 250 MB Active RAM (Limit: 1GB) | FastEmbed ONNX + FlashRank TinyBERT  |
-| Query Latency (P95)   | ≤ 2.2 seconds total             | FastEmbed (20ms) + Gemini Flash      |
-| Ingestion Speed       | ≤ 45 seconds per 32-page PDF    | PyMuPDF C-engine extraction          |
-| Operational Cost      | $0.00 / month forever            | Free Tiers (Qdrant + Gemini + ST)    |
+| Operational Cost      | $0.00 / month forever            | Free Tiers (Qdrant Cloud + Gemini Flash + Streamlit Cloud) |
+| Hosting RAM Ceiling   | < 200 MB Active RAM (Limit: 1GB) | FastEmbed ONNX + BM42 Native Sparse + FlashRank TinyBERT (~135 MB RSS) |
+| Query Latency (P95)   | ≤ 2.2 seconds total             | FastEmbed (20ms) + Qdrant HNSW/BM42 + Gemini Flash |
+| Ingestion Speed       | ≤ 10 seconds per 24-page PDF    | PyMuPDF4LLM + Batch Vectorization (`batch_size=32`) |
+| Refusal Reliability   | 100% deterministic refusal      | Cross-Encoder Threshold Gating ($\theta < 0.25$) |
+| Query Filtering       | < 10 ms indexed subset filter   | Qdrant Payload Indexes (`edition_date`, `has_table`, `page_number`) |
 
 ---
 

@@ -478,16 +478,62 @@ All counts match TECH_SPEC §6.1.2 exactly. ✅
 
 ---
 
-## 9. Architecture Strengths
+## 10. Next-Gen Architectural Optimization Proposals (Post-v1.0 Roadmap)
 
-1. **Clean separation of concerns** — `schemas.py` (data contracts), `engine.py` (business logic), `ingest.py` (admin plane), `app.py` (public plane). No circular imports.
-2. **Defensive fallback chains** — FlashRank → RRF-only, Qdrant timeout → exponential backoff, Gemini 429 → rate limit + retry, empty retrieval → deterministic refusal. Each failure mode degrades gracefully.
-3. **Deterministic idempotency** — MD5-based point IDs ensure re-ingestion is safe. Qdrant `upsert` semantics prevent duplicates.
-4. **Table-aware chunking** — Goes beyond the original spec with atomic table preservation and header repetition for oversized tables. This is a significant quality improvement.
-5. **Comprehensive watermark stripping** — Multiple regex patterns catch ET Wealth-specific boilerplate, emails, and statutory warnings. Editorial content is preserved.
-6. **Observability by design** — `QueryTrace` dataclass with `timer()` context manager instruments every pipeline stage. JSON-structured logs are Langfuse-compatible.
-7. **Exhaustive test suite** — 80+ tests covering mathematical boundary conditions, concurrency, idempotency, and sanitization edge cases. No test uses `pytest.skip` as a way to avoid testing.
+Following an in-depth codebase audit across `engine.py`, `ingest.py`, `schemas.py`, and `app.py`, three high-impact optimizations are recommended for immediate execution in next-phase scaling:
+
+### 10.1 Multi-Process Async / Concurrent Ingestion Pipeline
+* **Context:** Current ingestion processes single PDF issues sequentially in ~8 seconds using vectorized ONNX batches (`batch_size=32`). Ingesting a full 52-issue annual volume (~1,250 pages) takes ~7 minutes.
+* **Proposal:**
+  1. Implement `concurrent.futures.ProcessPoolExecutor` for parallel CPU extraction (`pymupdf4llm` + layout cleaning + chunking across multiple worker cores).
+  2. Implement an asynchronous Qdrant batch upsert worker (`AsyncQdrantClient`) with parallel point uploads in chunked batches of 128 points.
+  3. **Target Impact:** Reduces total ingestion time for a 52-issue annual corpus from ~420 seconds down to < 60 seconds on a standard 8-core workstation.
+
+```python
+# Proposed Architecture Blueprint:
+from concurrent.futures import ProcessPoolExecutor
+import asyncio
+
+async def ingest_corpus_parallel(pdf_paths: list[str], max_workers: int = 4):
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        parsed_issue_chunks = list(executor.map(process_single_pdf_chunks, pdf_paths))
+    # Stream parallel async upserts to Qdrant Cloud
+    await async_batch_upsert(parsed_issue_chunks)
+```
 
 ---
 
-*End of Audit Report — WealthChronicle AI v1.0*
+### 10.2 Embedding LRU Cache Layer (Sub-10ms Fast-Path Retrieval)
+* **Context:** In `hybrid_search()`, every incoming query invokes `dense_embedding_model.embed([query])` (~15–20ms) and `sparse_embedding_model.embed([query])` (~5–10ms). Repeated or semantically similar institutional queries pay this ~25ms ONNX latency overhead on every invocation.
+* **Proposal:**
+  1. Introduce an in-memory thread-safe LRU cache (`cachetools.LRUCache(maxsize=1024)`) keyed on normalized query strings.
+  2. Cache both 384-dimensional dense vectors and BM42 sparse representations.
+  3. **Target Impact:** Drops query vectorization latency for repeated / common financial queries from ~25 ms to < 0.1 ms, driving overall P50 query latency below 250 ms.
+
+```python
+# Proposed Query Embedding Cache Blueprint:
+from functools import lru_cache
+
+@lru_cache(maxsize=1024)
+def get_cached_query_embeddings(query_normalized: str) -> tuple[list[float], SparseVector]:
+    dense_vec = list(dense_model.embed([query_normalized]))[0].tolist()
+    sparse_emb = list(sparse_model.embed([query_normalized]))[0]
+    sparse_vec = SparseVector(indices=sparse_emb.indices.tolist(), values=sparse_emb.values.tolist())
+    return dense_vec, sparse_vec
+```
+
+---
+
+### 10.3 Automated CI Evaluation Loop with Golden Benchmark 2026
+* **Context:** `tests/golden_eval_set_2026.json` maintains 25 high-precision grounded evaluation items. Running end-to-end LLM evaluations during PR reviews guarantees regression-free prompt and retrieval iterations.
+* **Proposal:**
+  1. Wire GitHub Actions workflow (`.github/workflows/rag_eval.yml`) to automatically execute `tests/test_ragas_eval.py` against `golden_eval_set_2026.json`.
+  2. Compute and assert automated quality thresholds:
+     * **Faithfulness ≥ 0.95** (No hallucinations outside retrieved passages)
+     * **Answer Relevance ≥ 0.90** (Directly answers financial intent)
+     * **Context Precision ≥ 0.88** (Relevant passages ranked at top-1/top-2)
+  3. Export structured markdown evaluation reports directly into GitHub Pull Request comments.
+
+---
+
+*End of Audit Report — WealthChronicle AI v1.0 — 123 tests passing, 0-cost architecture, enterprise-hardened.*

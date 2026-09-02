@@ -32,65 +32,83 @@ The system is decomposed into two physically isolated execution planes:
 | **Admin Ingestion Plane** | Local laptop (Python CLI) | Outbound HTTPS to Qdrant Cloud | Full CRUD (Admin API Key) |
 | **Public Query Plane** | Streamlit Cloud container | Outbound HTTPS to Qdrant Cloud + Google AI Studio | Read-only (Read API Key) |
 
-#### 1.1.1 Ingestion Sequence (Admin Plane)
+#### 1.1.1 Ingestion Architecture & Sequence (Admin Plane)
+
+```mermaid
+graph TD
+    A["Source PDF Issue"] --> B["PyMuPDF4LLM Layout-Aware Extraction"]
+    B --> C["Table Isolation & Header Preservation"]
+    C --> D["Watermark & Statutory Ad Sanitization"]
+    D --> E["Punctuation-Aware Sliding Window Chunking"]
+    E --> F["Batch Vectorization (batch_size=32)"]
+    F --> G1["Dense Vectors: BAAI/bge-small-en-v1.5 (384-d)"]
+    F --> G2["Sparse Vectors: Qdrant/bm42-all-minilm-l6-v2-attentions"]
+    G1 --> H["Deterministic UUIDv5 / MD5 Point IDs"]
+    G2 --> H
+    H --> I["Qdrant Cloud ('wealth_archive')"]
+    I --> J1["Named Vectors ('dense' + 'sparse')"]
+    I --> J2["Payload Indexes (edition_date, has_table, page_number, source)"]
+```
 
 ```mermaid
 sequenceDiagram
     participant Admin as Admin CLI (ingest.py)
     participant PyMuPDF as PyMuPDF4LLM
-    participant Chunker as SlidingWindowChunker
-    participant Filter as NoiseFilter
+    participant Cleaner as TextSanitizer
+    participant Chunker as TableAwareChunker
     participant FastEmbed as FastEmbed ONNX (CPU)
     participant Qdrant as Qdrant Cloud
 
     Admin->>PyMuPDF: parse(pdf_path, page_chunks=True)
-    PyMuPDF-->>Admin: List[PageMarkdown] with column-aware text
+    PyMuPDF-->>Admin: List[PageMarkdown] (layout-aware)
+    Admin->>Cleaner: clean_extracted_text(pages)
+    Cleaner-->>Admin: Sanitized text (watermarks & ads stripped)
     Admin->>Chunker: sliding_window_chunk(text, S=600, O=100)
-    Chunker-->>Admin: List[str] raw chunks
-    Admin->>Filter: apply_noise_filter(chunks)
-    Filter-->>Admin: List[str] clean chunks (>=120 chars, no ads)
-    Admin->>FastEmbed: embed(clean_texts) → 384-dim vectors
-    FastEmbed-->>Admin: List[np.ndarray] embeddings
+    Chunker-->>Admin: List[str] chunks (atomic tables + prose)
+    Admin->>FastEmbed: embed(all_texts, batch_size=32)
+    FastEmbed-->>Admin: Dense (384-d) + Sparse (BM42) embeddings
     Admin->>Admin: generate_deterministic_point_ids(chunks)
+    Admin->>Qdrant: ensure_collection_exists() + ensure_payload_indexes()
     Admin->>Qdrant: upsert(collection="wealth_archive", points)
-    Qdrant-->>Admin: ACK (point_count)
+    Qdrant-->>Admin: ACK (indexed count)
 ```
 
-#### 1.1.2 Query Sequence (Public Plane)
+#### 1.1.2 Retrieval & Refusal Sequence (Public Plane)
 
 ```mermaid
 sequenceDiagram
-    participant User as End User (Browser)
-    participant ST as Streamlit Cloud (app.py)
+    participant User as User (Terminal UI)
+    participant ST as Streamlit app.py
     participant FE as FastEmbed ONNX (CPU)
-    participant QD as Qdrant Cloud
-    participant FR as FlashRank TinyBERT (CPU)
+    participant QD as Qdrant Cloud ('wealth_archive')
+    participant FR as FlashRank TinyBERT
     participant Gemini as Gemini 2.5 Flash API
 
-    User->>ST: Submit query string
-    ST->>FE: embed([query]) → 384-dim dense + sparse vectors
-    FE-->>ST: dense_vector + sparse_vector (latency: ~20ms)
+    User->>ST: Submit query (with optional payload filters)
+    ST->>FE: embed([query]) → 384-d dense + BM42 sparse vectors
+    FE-->>ST: query_dense + query_sparse (~20ms)
 
-    par Dense Retrieval
-        ST->>QD: prefetch(dense_vector, using="dense", limit=12)
-        QD-->>ST: dense_hits[0..11] with scores
-    and Sparse Retrieval
-        ST->>QD: prefetch(sparse_vector, using="sparse", limit=12)
-        QD-->>ST: sparse_hits[0..11] with scores
+    par Parallel Prefetch
+        ST->>QD: query_points(dense_vector, using="dense", limit=K, filter=query_filter)
+        QD-->>ST: dense_hits (scores + payload)
+    and
+        ST->>QD: query_points(sparse_vector, using="sparse", limit=K, filter=query_filter)
+        QD-->>ST: sparse_hits (scores + payload)
     end
 
-    ST->>ST: RRF fusion (k=60) + Recency Decay (α=0.35, τ=365)
+    ST->>ST: RRF Fusion (k=60) + Temporal Decay Multiplier (1.0 + 0.35*exp(-Δt/365))
     ST->>FR: rerank(query, fused_candidates[:20])
-    FR-->>ST: reranked[0..19] with cross-encoder scores
+    FR-->>ST: reranked[0..3] with Cross-Encoder scores
 
-    ST->>ST: apply_refusal_check(max_score, θ=0.25)
-    alt max_score >= θ
-        ST->>ST: assemble_prompt(top_4_chunks, prompts.yaml)
-        ST->>Gemini: generate_content(prompt)
-        Gemini-->>ST: streamed answer text
-        ST->>User: render answer + citation expander
-    else max_score < θ
-        ST->>User: render refusal message (no LLM call)
+    ST->>ST: Evaluate Refusal Gate (Top-1 Cross-Encoder Score < 0.25)
+    alt Refusal Gate Passed (Score >= 0.25)
+        ST->>ST: Assemble Structured Prompt (context_passages + system_prompt)
+        ST->>Gemini: safe_generate(prompt, rate_limiter)
+        Gemini-->>ST: Synthesized grounded response
+        ST->>ST: validate_citations(response, reranked_passages)
+        ST->>User: Display Telemetry Ribbon + Answer + Interactive Citation Expander
+    else Refusal Gate Triggered (Score < 0.25)
+        ST->>User: Display Deterministic Refusal Audit Notice (No LLM Call)
     end
 ```
 
@@ -351,6 +369,11 @@ PAYLOAD_INDEXES = [
         "field_name": "edition_date",
         "field_schema": PayloadSchemaType.KEYWORD,  # ISO date strings are keyword-indexed
     },
+    # Required for tabular chunk filtering
+    {
+        "field_name": "has_table",
+        "field_schema": PayloadSchemaType.BOOL,
+    },
     # Required for page-level filtering in citation drilldown
     {
         "field_name": "page_number",  
@@ -369,11 +392,14 @@ PAYLOAD_INDEXES = [
 ```python
 def ensure_payload_indexes(client: QdrantClient, collection: str) -> None:
     for idx in PAYLOAD_INDEXES:
-        client.create_payload_index(
-            collection_name=collection,
-            field_name=idx["field_name"],
-            field_schema=idx["field_schema"],
-        )
+        try:
+            client.create_payload_index(
+                collection_name=collection,
+                field_name=idx["field_name"],
+                field_schema=idx["field_schema"],
+            )
+        except Exception:
+            pass
 ```
 
 ---
