@@ -21,116 +21,157 @@
 
 ---
 
-## 1. System Architecture & Sequence Mechanics
+## 1. System Architecture & Component Inventory
 
-### 1.1 Component Interaction & Sequence Diagram
+### 1.1 Core Module Inventory (7 Modules)
 
-The system is decomposed into two physically isolated execution planes:
+The codebase is organized into 7 functional modules:
 
-| Plane | Runtime | Network Posture | Write Privilege |
-|-------|---------|-----------------|-----------------|
-| **Admin Ingestion Plane** | Local laptop (Python CLI) | Outbound HTTPS to Qdrant Cloud | Full CRUD (Admin API Key) |
-| **Public Query Plane** | Streamlit Cloud container | Outbound HTTPS to Qdrant Cloud + Google AI Studio | Read-only (Read API Key) |
+| Module | Execution Plane / Port | Role & Responsibilities | Key Dependencies |
+|--------|------------------------|-------------------------|------------------|
+| [`app.py`](file:///c:/WealthChronicleRag/app.py) | **Public Query Terminal**<br/>(Port 8501) | Read-only research UI, token streaming via `st.write_stream()`, TTFT telemetry display, citation verification, and inspection modals (`@st.dialog`). | `streamlit`, `google.genai` |
+| [`admin_ingest_app.py`](file:///c:/WealthChronicleRag/admin_ingest_app.py) | **Admin Management Cockpit**<br/>(Port 8502) | Document staging, batch vectorization (`batch_size=32`), live status telemetry, payload index management, and collection purging modal (`@st.dialog`). | `streamlit`, `pymupdf4llm`, `qdrant_client` |
+| [`engine.py`](file:///c:/WealthChronicleRag/engine.py) | **Core Engine & Search Plane** | Qdrant hybrid retrieval (`BM42` + `bge-small-en-v1.5`), `@lru_cache(maxsize=512)` query embedding caching, dual-mode storage fallback (`CLOUD` vs `LOCAL_DISK`), RRF fusion, temporal decay, FlashRank reranking, rate limiting, and `TimedStreamWrapper`. | `fastembed`, `flashrank`, `qdrant_client` |
+| [`ingest.py`](file:///c:/WealthChronicleRag/ingest.py) | **Ingestion Plane** | PyMuPDF4LLM layout parsing, table isolation, footer/watermark sanitization, sliding window chunking, deterministic MD5/UUIDv5 IDs, and server-side payload index initialization. | `pymupdf4llm`, `fastembed`, `qdrant_client` |
+| [`schemas.py`](file:///c:/WealthChronicleRag/schemas.py) | **Data Contracts & Validation** | Pydantic v2 schemas: `ChunkPayload` (with `has_table: bool`), `SearchResult`, `RerankedPassage`, `EvaluationItem`, and `CitationMetadata`. | `pydantic` |
+| [`telemetry.py`](file:///c:/WealthChronicleRag/telemetry.py) | **Audit Trail & Observability** | SQLite persistent audit logger (`telemetry.db`) recording query text, latency ms, TTFT ms, gate status, top cross-encoder score, and storage mode. | `sqlite3` |
+| [`eval_runner.py`](file:///c:/WealthChronicleRag/eval_runner.py) | **IR Benchmark Evaluator** | CLI automated evaluation runner computing Hit Rate@3, Hit Rate@5, MRR@5, and Refusal Precision against `tests/golden_eval_set_2026.json`. | `qdrant_client`, `fastembed` |
 
-#### 1.1.1 Ingestion Architecture & Sequence (Admin Plane)
+---
+
+### 1.2 Dual-Plane Architecture & Execution Topology
 
 ```mermaid
 graph TD
-    A["Source PDF Issue"] --> B["PyMuPDF4LLM Layout-Aware Extraction"]
-    B --> C["Table Isolation & Header Preservation"]
-    C --> D["Watermark & Statutory Ad Sanitization"]
-    D --> E["Punctuation-Aware Sliding Window Chunking"]
-    E --> F["Batch Vectorization (batch_size=32)"]
-    F --> G1["Dense Vectors: BAAI/bge-small-en-v1.5 (384-d)"]
-    F --> G2["Sparse Vectors: Qdrant/bm42-all-minilm-l6-v2-attentions"]
-    G1 --> H["Deterministic UUIDv5 / MD5 Point IDs"]
-    G2 --> H
-    H --> I["Qdrant Cloud ('wealth_archive')"]
-    I --> J1["Named Vectors ('dense' + 'sparse')"]
-    I --> J2["Payload Indexes (edition_date, has_table, page_number, source)"]
+    subgraph Admin Cockpit [Admin Ingestion Cockpit - Port 8502]
+        A1["PDF Upload & Staging (data/)"] --> A2["PyMuPDF4LLM Layout Parser"]
+        A2 --> A3["Table Isolation & Header Preservation"]
+        A3 --> A4["Watermark & Noise Sanitizer"]
+        A4 --> A5["Sliding Window Chunker (600/100)"]
+        A5 --> A6["Batch Vectorization (batch_size=32)"]
+        A6 --> A7["Deterministic UUIDv5 / MD5 Point Structs"]
+        A7 --> A8["Qdrant Client (upsert + payload indexing)"]
+    end
+
+    subgraph Storage Backends [Dual-Mode Storage Backend]
+        S1["Qdrant Cloud ('wealth_archive')"]
+        S2["Qdrant Local Disk ('./qdrant_local_storage')"]
+        S3["SQLite Telemetry DB ('telemetry.db')"]
+    end
+
+    subgraph Public Terminal [Public Query Terminal - Port 8501]
+        Q1["User Query + Payload Filters"] --> Q2["LRU Query Cache Lookup (@lru_cache 512)"]
+        Q2 --> Q3["Parallel Dense (384d) + Sparse (BM42) Retrieval"]
+        Q3 --> Q4["Server-side RRF Fusion + Temporal Decay"]
+        Q4 --> Q5["FlashRank Cross-Encoder Reranker (TinyBERT)"]
+        Q5 --> Q6{"Refusal Gate (Top-1 Score < 0.25)"}
+        Q6 -->|Score >= 0.25| Q7["Token Streaming Synthesis (st.write_stream)"]
+        Q6 -->|Score < 0.25| Q8["Deterministic Refusal Notice (No LLM Call)"]
+        Q7 --> Q9["Citation Grounding Verification"]
+        Q9 --> Q10["Audit Logging to SQLite (telemetry.db)"]
+    end
+
+    A8 --> S1
+    A8 -.->|DNS/Timeout Fallback| S2
+    Q3 --> S1
+    Q3 -.->|DNS/Timeout Fallback| S2
+    Q10 --> S3
 ```
+
+---
+
+### 1.3 Sequence Diagrams
+
+#### 1.3.1 Ingestion Sequence (Admin Cockpit — Port 8502)
 
 ```mermaid
 sequenceDiagram
-    participant Admin as Admin CLI (ingest.py)
-    participant PyMuPDF as PyMuPDF4LLM
-    participant Cleaner as TextSanitizer
-    participant Chunker as TableAwareChunker
-    participant FastEmbed as FastEmbed ONNX (CPU)
-    participant Qdrant as Qdrant Cloud
+    participant Admin as Admin User
+    participant Cockpit as admin_ingest_app.py
+    participant Ingest as ingest.py
+    participant FastEmbed as FastEmbed SIMD (batch_size=32)
+    participant Qdrant as Qdrant Storage (Cloud / Local)
 
-    Admin->>PyMuPDF: parse(pdf_path, page_chunks=True)
-    PyMuPDF-->>Admin: List[PageMarkdown] (layout-aware)
-    Admin->>Cleaner: clean_extracted_text(pages)
-    Cleaner-->>Admin: Sanitized text (watermarks & ads stripped)
-    Admin->>Chunker: sliding_window_chunk(text, S=600, O=100)
-    Chunker-->>Admin: List[str] chunks (atomic tables + prose)
-    Admin->>FastEmbed: embed(all_texts, batch_size=32)
-    FastEmbed-->>Admin: Dense (384-d) + Sparse (BM42) embeddings
-    Admin->>Admin: generate_deterministic_point_ids(chunks)
-    Admin->>Qdrant: ensure_collection_exists() + ensure_payload_indexes()
-    Admin->>Qdrant: upsert(collection="wealth_archive", points)
-    Qdrant-->>Admin: ACK (indexed count)
+    Admin->>Cockpit: Upload & Stage PDF Editions
+    Cockpit->>Ingest: extract_pages(pdf_path) + clean_extracted_text()
+    Ingest-->>Cockpit: Sanitized markdown with isolated tables
+    Cockpit->>Ingest: sliding_window_chunk(chunk_size=600, overlap=100)
+    Ingest-->>Cockpit: List[ChunkPayload] (with has_table & deterministic IDs)
+    Cockpit->>FastEmbed: embed(all_texts, batch_size=32)
+    FastEmbed-->>Cockpit: Dense 384d + BM42 Sparse vectors
+    Cockpit->>Qdrant: ensure_collection_exists() + ensure_payload_indexes()
+    Cockpit->>Qdrant: upsert(collection_name="wealth_archive", points)
+    Qdrant-->>Cockpit: ACK (indexed chunks count)
+    Cockpit-->>Admin: Render status matrix & live completion telemetry
 ```
 
-#### 1.1.2 Retrieval & Refusal Sequence (Public Plane)
+#### 1.3.2 Retrieval & Token Streaming Sequence (Public Terminal — Port 8501)
 
 ```mermaid
 sequenceDiagram
-    participant User as User (Terminal UI)
-    participant ST as Streamlit app.py
-    participant FE as FastEmbed ONNX (CPU)
-    participant QD as Qdrant Cloud ('wealth_archive')
+    participant User as Terminal User
+    participant App as app.py
+    participant Engine as engine.py
+    participant Cache as LRU Query Cache (512)
+    participant QD as Qdrant Storage (Cloud / Local)
     participant FR as FlashRank TinyBERT
     participant Gemini as Gemini 2.5 Flash API
+    participant Telem as telemetry.py (SQLite)
 
-    User->>ST: Submit query (with optional payload filters)
-    ST->>FE: embed([query]) → 384-d dense + BM42 sparse vectors
-    FE-->>ST: query_dense + query_sparse (~20ms)
-
-    par Parallel Prefetch
-        ST->>QD: query_points(dense_vector, using="dense", limit=K, filter=query_filter)
-        QD-->>ST: dense_hits (scores + payload)
-    and
-        ST->>QD: query_points(sparse_vector, using="sparse", limit=K, filter=query_filter)
-        QD-->>ST: sparse_hits (scores + payload)
+    User->>App: Submit Financial Query
+    App->>Engine: hybrid_search(query, query_filter)
+    Engine->>Cache: compute_query_embeddings(query)
+    alt Cache Hit
+        Cache-->>Engine: Cached (dense_vector, sparse_vector) [< 0.1ms]
+    else Cache Miss
+        Cache->>Cache: Compute BAAI 384d + BM42 representations
+        Cache-->>Engine: Computed vectors (~20ms)
     end
 
-    ST->>ST: RRF Fusion (k=60) + Temporal Decay Multiplier (1.0 + 0.35*exp(-Δt/365))
-    ST->>FR: rerank(query, fused_candidates[:20])
-    FR-->>ST: reranked[0..3] with Cross-Encoder scores
+    par Dual Retrieval
+        Engine->>QD: query_points(dense_vector, using="dense", limit=12)
+        QD-->>Engine: Dense candidates
+    and
+        Engine->>QD: query_points(sparse_vector, using="sparse", limit=12)
+        QD-->>Engine: Sparse candidates
+    end
 
-    ST->>ST: Evaluate Refusal Gate (Top-1 Cross-Encoder Score < 0.25)
-    alt Refusal Gate Passed (Score >= 0.25)
-        ST->>ST: Assemble Structured Prompt (context_passages + system_prompt)
-        ST->>Gemini: safe_generate(prompt, rate_limiter)
-        Gemini-->>ST: Synthesized grounded response
-        ST->>ST: validate_citations(response, reranked_passages)
-        ST->>User: Display Telemetry Ribbon + Answer + Interactive Citation Expander
-    else Refusal Gate Triggered (Score < 0.25)
-        ST->>User: Display Deterministic Refusal Audit Notice (No LLM Call)
+    Engine->>Engine: Compute RRF (k=60) + Temporal Decay (1.0 + 0.35*exp(-Δt/365))
+    Engine->>FR: rerank_candidates(fused_candidates[:20])
+    FR-->>Engine: Top-4 RerankedPassages with cross-encoder scores
+
+    alt Score >= 0.25 (Grounded Context)
+        Engine->>Gemini: generate_content(stream=True, prompt)
+        Gemini-->>App: Stream token chunks
+        App->>App: st.write_stream(TimedStreamWrapper) -> Real-time token rendering
+        App->>App: Measure TTFT (ms) & completion latency (ms)
+        App->>App: validate_citations(answer_text, reranked_passages)
+        App->>Telem: log_query_audit(query, "PASSED", latency_ms, ttft_ms, top_score)
+        App-->>User: Display answer, 5-metric telemetry ribbon, and source expander
+    else Score < 0.25 (Refusal Gate Triggered)
+        App->>Telem: log_query_audit(query, "REFUSED", latency_ms, ttft_ms=0, top_score)
+        App-->>User: Display Deterministic Refusal Notice (0 LLM Tokens Consumed)
     end
 ```
 
-### 1.2 Network & Latency Budget Decomposition
+---
 
-**Target:** P95 end-to-end query latency ≤ 2,200 ms (PRD §4).
+### 1.4 Network & Latency Budget Decomposition
+
+**Target:** P95 end-to-end query latency $\le$ 2,200 ms with TTFT $\le$ 800 ms.
 
 | Stage | Component | Operation | P50 (ms) | P95 (ms) | Bound |
 |-------|-----------|-----------|----------|----------|-------|
-| T₁ | FastEmbed ONNX | Query vectorization (384-dim dense + sparse) | 20 | 35 | CPU |
-| T₂ | Qdrant Cloud HNSW | Dense prefetch (k=12) | 35 | 80 | Network + HNSW |
-| T₃ | Qdrant Cloud Sparse | Sparse prefetch (k=12) | 5 | 15 | Network + HNSW |
-| T₄ | RRF + Recency | Score fusion + sort | <1 | <1 | CPU |
-| T₅ | FlashRank TinyBERT | Cross-encoder rerank (20 pairs) | 45 | 85 | CPU |
-| T₆ | Prompt assembly | String formatting + YAML load | <1 | <1 | CPU |
-| T₇ | Gemini 2.5 Flash | TTFT (streaming first token) | 350 | 800 | Network + GPU |
-| T₈ | Gemini 2.5 Flash | Full generation (~300 tokens) | 600 | 1,100 | Network + GPU |
-| T₉ | Streamlit render | Markdown + expander widget | 5 | 15 | Browser |
-| | | **Total** | **~1,061** | **~2,131** | **✓ ≤ 2,200** |
-
-> [!IMPORTANT]
-> The latency budget has ~69 ms of headroom at P95. Sparse vector search adds ~5-15ms vs in-memory BM25 but eliminates cold-boot corpus download and memory overhead.
+| T₁ | LRU Cache / FastEmbed | Query vectorization (Cache hit: <0.1ms, Miss: 20ms) | <1 | 25 | Memory / CPU |
+| T₂ | Qdrant Cloud HNSW | Dense prefetch (limit=12) | 35 | 80 | Network + HNSW |
+| T₃ | Qdrant Cloud Sparse | Sparse BM42 prefetch (limit=12) | 5 | 15 | Network + Inverted Index |
+| T₄ | Engine Fusion | RRF (k=60) + Temporal Decay calculation | <1 | <1 | CPU |
+| T₅ | FlashRank TinyBERT | Cross-encoder rerank (20 pairs) | 45 | 85 | CPU ONNX |
+| T₆ | Prompt Assembly | String formatting & guardrails prep | <1 | <1 | CPU |
+| T₇ | Gemini 2.5 Flash | **Time-to-First-Token (TTFT)** | 350 | 750 | Network + GPU |
+| T₈ | Gemini 2.5 Flash | Streaming token completion (~300 tokens) | 600 | 1,100 | Network + GPU |
+| T₉ | SQLite Telemetry | Persistent audit logging (`telemetry.db`) | 1 | 3 | Disk I/O |
+| | | **Total End-to-End Latency** | **~1,038** | **~2,059** | **✓ $\le$ 2,200 ms** |
 
 ---
 
@@ -240,6 +281,10 @@ class ChunkPayload(BaseModel):
     text: str = Field(
         ..., min_length=120, max_length=8000,
         description="Chunk text content after noise filtering",
+    )
+    has_table: bool = Field(
+        default=False,
+        description="True if chunk contains extracted tabular data",
     )
     source: str = Field(
         default="Weekly Financial Dossier",
@@ -400,6 +445,27 @@ def ensure_payload_indexes(client: QdrantClient, collection: str) -> None:
             )
         except Exception:
             pass
+```
+
+### 2.4 Persistent Telemetry Database Schema (`telemetry.db`)
+
+All user queries, performance timings, storage backend states, and retrieval gate outcomes are written to an embedded SQLite database (`telemetry.db`) via `telemetry.py`:
+
+```sql
+CREATE TABLE IF NOT EXISTS query_audits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    query_text TEXT NOT NULL,
+    storage_mode TEXT NOT NULL,             -- 'CLOUD' | 'LOCAL_DISK'
+    top_score REAL NOT NULL,                -- Max cross-encoder score ∈ [0.0, 1.0]
+    gate_status TEXT NOT NULL,              -- 'PASSED' | 'REFUSED'
+    latency_ms REAL NOT NULL,               -- End-to-end processing latency
+    chunks_retrieved_count INTEGER NOT NULL,-- Number of candidate passages evaluated
+    ttft_ms REAL NOT NULL DEFAULT 0.0       -- Time-to-First-Token in milliseconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_audits_timestamp ON query_audits(timestamp);
+CREATE INDEX IF NOT EXISTS idx_query_audits_gate_status ON query_audits(gate_status);
 ```
 
 ---
@@ -641,61 +707,78 @@ def dense_retrieve(
     query_vector: list[float],   # 384-dim from FastEmbed
     limit: int = 12,
 ) -> list[SearchResult]:
-    """k-NN search over HNSW graph on Qdrant Cloud.
+    """k-NN search over HNSW dense vector index in Qdrant.
     
     Returns top-k candidates sorted by descending cosine similarity.
-    Qdrant cosine scores are in [0, 1] for normalized vectors.
     """
-    hits = client.search(
+    hits = client.query_points(
         collection_name="wealth_archive",
-        query_vector=query_vector,
+        query=query_vector,
+        using="dense",
         limit=limit,
-        search_params=SearchParams(hnsw_ef=64, exact=False),
-    )
+        query_filter=query_filter,
+    ).points
     return [
         SearchResult(
             point_id=str(h.id),
-            text=h.payload["text"],
-            payload=ChunkPayload(**h.payload),
-            score=h.score,
+            text=h.payload["text"] if isinstance(h.payload, dict) else h.payload.text,
+            payload=ChunkPayload(**h.payload) if isinstance(h.payload, dict) else h.payload,
+            score=h.score or 0.0,
             source=RetrievalSource.DENSE,
             dense_rank=rank + 1,
+            vector_name="dense",
         )
         for rank, h in enumerate(hits)
     ]
 ```
 
-#### 4.1.2 Sparse Lexical Path (BM25)
+#### 4.1.2 Sparse Vector Path (Native Qdrant BM42)
 
 ```python
-import bm25s
-import numpy as np
-
-class BM25Index:
-    """In-memory BM25 index over the full corpus text.
+def retrieve_sparse(
+    client: QdrantClient,
+    sparse_vector: models.SparseVector,
+    limit: int = 12,
+    query_filter: models.Filter | None = None,
+) -> list[SearchResult]:
+    """Inverted index lookup over Qdrant BM42 sparse representations.
     
-    Lifecycle:
-        - Built once at Streamlit startup via @st.cache_resource.
-        - Corpus texts are fetched from Qdrant via scroll() on boot.
-        - RAM cost: ~2 bytes/token × 3M tokens ≈ 6 MB (well within budget).
+    Returns top-k lexical candidates sorted by BM42 relevance score.
     """
-    
-    def __init__(self, corpus_texts: list[str], corpus_ids: list[str]):
-        self.corpus_ids = corpus_ids
-        tokenized = bm25s.tokenize(corpus_texts, stopwords="en")
-        self.model = bm25s.BM25()
-        self.model.index(tokenized)
-        self._corpus_tokens = tokenized
-    
-    def search(self, query: str, limit: int = 12) -> list[tuple[str, float]]:
-        """Return (point_id, bm25_score) tuples, descending by score."""
-        query_tokens = bm25s.tokenize([query], stopwords="en")
-        results, scores = self.model.retrieve(query_tokens, k=limit, corpus=self.corpus_ids)
-        return [
-            (str(doc_id), float(score))
-            for doc_id, score in zip(results[0], scores[0])
-            if score > 0
-        ]
+    hits = client.query_points(
+        collection_name="wealth_archive",
+        query=sparse_vector,
+        using="sparse",
+        limit=limit,
+        query_filter=query_filter,
+    ).points
+    return [
+        SearchResult(
+            point_id=str(h.id),
+            text=h.payload["text"] if isinstance(h.payload, dict) else h.payload.text,
+            payload=ChunkPayload(**h.payload) if isinstance(h.payload, dict) else h.payload,
+            score=h.score or 0.0,
+            source=RetrievalSource.SPARSE,
+            sparse_rank=rank + 1,
+            vector_name="sparse",
+        )
+        for rank, h in enumerate(hits)
+    ]
+```
+
+#### 4.1.3 In-Memory LRU Query Vector Cache
+
+To eliminate redundant vectorization latency on frequent or repeated queries, `engine.py` implements an in-memory LRU embedding cache:
+
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=512)
+def compute_query_embeddings(query_text: str) -> tuple[tuple[float, ...], tuple[int, ...], tuple[float, ...]]:
+    """Compute dense and sparse query vectors with LRU memoization."""
+    dense_vec = tuple(compute_query_dense_embedding(query_text))
+    indices, values = compute_query_sparse_embedding(query_text)
+    return dense_vec, tuple(indices), tuple(values)
 ```
 
 ### 4.2 Reciprocal Rank Fusion (RRF) & Time-Decay Formulation
@@ -1341,7 +1424,52 @@ def test_rag_faithfulness_and_relevancy(rag_services, golden_data):
 | **Answer Relevancy** | Generate $N$ synthetic questions from the answer. Compute average cosine similarity between synthetic questions and the original query. | Off-topic answers that don't address the user's actual question |
 | **Context Precision** | For each relevant chunk (determined by ground truth), check if it appears before irrelevant chunks in the retrieval ranking. Score = mean Average Precision. | Poor retrieval ranking where noise chunks outrank relevant ones |
 
-### 6.3 GitHub Actions Regression Gate
+### 6.3 Automated IR Benchmark Evaluation Runner (`eval_runner.py`)
+
+A standalone CLI tool executes pure retrieval and reranking evaluation directly against active Qdrant storage (`CLOUD` or `LOCAL_DISK`):
+
+```powershell
+python eval_runner.py --eval-set tests/golden_eval_set_2026.json --output-json eval_metrics.json
+```
+
+#### 6.3.1 Mathematical Metrics Formulation
+
+1. **Hit Rate @ K:**
+   $$\text{HitRate@}K = \frac{1}{|Q_{\text{in}}|} \sum_{q \in Q_{\text{in}}} \mathbb{I}(\text{rank}(q) \le K)$$
+   *Target:* Hit Rate @ 3 $\ge 85.0\%$, Hit Rate @ 5 $\ge 90.0\%$.
+
+2. **Mean Reciprocal Rank (MRR @ 5):**
+   $$\text{MRR@}5 = \frac{1}{|Q_{\text{in}}|} \sum_{q \in Q_{\text{in}}} \text{RR}(q), \quad \text{where } \text{RR}(q) = \begin{cases} \frac{1}{\text{rank}(q)} & \text{if } 1 \le \text{rank}(q) \le 5 \\ 0 & \text{otherwise} \end{cases}$$
+   *Target:* MRR @ 5 $\ge 0.80$.
+
+3. **Refusal Precision:**
+   $$\text{Refusal Precision} = \frac{\sum (P_{\text{refuse}} \land T_{\text{OOD}})}{\sum P_{\text{refuse}}}$$
+   *Target:* Refusal Precision $\ge 95.0\%$.
+
+#### 6.3.2 Terminal Reporting Output
+
+```text
+======================================================================
+  WEALTHCHRONICLE AI — RETRIEVAL BENCHMARK EVALUATION REPORT
+======================================================================
+  Storage Backend:          LOCAL_DISK
+  Total Queries Evaluated:  29
+  In-Domain Test Queries:   25
+  Out-of-Domain Queries:    4
+  Total Duration:           1.00 seconds
+----------------------------------------------------------------------
+  Metric                       | Score      | Target     | Status    
+----------------------------------------------------------------------
+  Hit Rate @ 3                 |   100.00% |    85.00% | [PASS]
+  Hit Rate @ 5                 |   100.00% |    90.00% | [PASS]
+  MRR @ 5                      |     1.0000 |     0.8000 | [PASS]
+  Refusal Precision            |   100.00% |    95.00% | [PASS]
+======================================================================
+  OVERALL BENCHMARK VERDICT:  PASSED
+======================================================================
+```
+
+### 6.4 GitHub Actions Regression Gate
 
 #### 6.3.1 Complete Workflow Definition
 

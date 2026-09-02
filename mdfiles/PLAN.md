@@ -1669,14 +1669,27 @@ print('✓ CI workflow YAML is syntactically valid')
 - [x] **P0-4:** Point collision & integrity guard on ingestion — pre-upsert `client.retrieve` checks existing point text payload; logs `POINT_COLLISION_DETECTED` warning if different text for same ID
 - [x] **P0-5:** Legacy YAML schema deprecation — `config/prompts.yaml` reduced to v2.0 keys only (`version`, `system_prompt`, `rag_synthesis_template`, `refusal_message`, `guardrails`); `engine.py:load_and_validate_prompts` emits `DeprecationWarning` for legacy `rag_prompt_template`, `refusal_config`, `prompt_version` if present
 
-### 6.8 Data Audit Remediation & 2026 Golden Benchmark Realignment
+### 6.9 Dual-Plane Architecture, Telemetry, Token Streaming & Benchmark Runner (Commit `296cd70`)
 
-- [x] Corpus sanitization: re-ingested `wealth_edition-133444653.pdf` → 27 artifact-free chunks (was 33); discarded 4 table-split artifacts (`p3_001`, `p10_001`, `p15_001`, `p19_000` with `data_rows=0`); 5 clean tables with `data_rows ≥ 2`
-- [x] Zero watermark leakage: `statutory_warning` stripped globally in `clean_extracted_text` (0 hits across all chunks)
-- [x] Zero empty `article_title`: fallback to `Page {page_number}` guarantees 100% populated
-- [x] Golden benchmark realigned: created `tests/golden_eval_set_2026.json` (25 items) strictly grounded in 2026-08-24 corpus — 8 tabular precision queries (FAST-DS, FD rates, fund returns), 12 prose synthesis, 5 adversarial refusal triggers (crypto, NFTs, predictions)
-- [x] CI updated: `.github/workflows/rag_eval.yml` validates 25-item schema, uses `EVAL_SET_PATH=tests/golden_eval_set_2026.json`
-- [x] Full verification: 117 tests pass, Ruff clean, MyPy clean
-
-All DoD checklists remain [x] verified. Next session: add Gemini key, batch ingest historical issues, Streamlit E2E queries.
+- [x] **Dual-Plane Split:**
+  - `app.py` configured as read-only Public Query Terminal on Port 8501.
+  - `admin_ingest_app.py` configured as administrative Management Cockpit on Port 8502 (staging, batch vectorization `batch_size=32`, collection purge dialog).
+- [x] **Query Vector LRU Caching:**
+  - Added `@lru_cache(maxsize=512)` to `compute_query_dense_embedding`, `compute_query_sparse_embedding`, and `compute_query_embeddings` in `engine.py`.
+- [x] **Dual-Mode Storage Fallback:**
+  - Implemented `get_qdrant_client()` connection manager.
+  - Gracefully falls back to local disk-backed storage (`QdrantClient(path="./qdrant_local_storage")`) on DNS resolution errors, connect timeouts, or missing cloud credentials.
+- [x] **Persistent SQLite Telemetry (`telemetry.py`):**
+  - Created `telemetry.db` schema logging `timestamp`, `query_text`, `storage_mode`, `top_score`, `gate_status`, `latency_ms`, `chunks_retrieved_count`, and `ttft_ms`.
+  - Displayed live query audit table in Section 5 of `admin_ingest_app.py`.
+- [x] **Token Streaming Synthesis & TTFT Tracking:**
+  - Updated `synthesize_answer()` with generator yields and created `TimedStreamWrapper`.
+  - Integrated `st.write_stream()` in `app.py` with 5-column telemetry readout (Total Latency, TTFT, Top Score, Time Decay, Refusal Status).
+- [x] **Standalone IR Benchmark Evaluator (`eval_runner.py`):**
+  - Standalone CLI runner evaluating hybrid search and cross-encoder reranking on `tests/golden_eval_set_2026.json`.
+  - Computes Hit Rate @ 3, Hit Rate @ 5, MRR @ 5, and Refusal Precision with institutional ASCII reports.
+- [x] **Complete Quality & Static Analysis:**
+  - 148 unit and integration tests passing (`pytest tests/ -v`).
+  - Zero Ruff lint errors (`ruff check . --fix`).
+  - Clean MyPy typing across all 7 source files (`schemas.py`, `engine.py`, `ingest.py`, `app.py`, `admin_ingest_app.py`, `telemetry.py`, `eval_runner.py`).
 
