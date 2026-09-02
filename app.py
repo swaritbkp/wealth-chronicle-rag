@@ -48,129 +48,93 @@ st.set_page_config(
 logger = logging.getLogger("wealthchronicle.trace")
 logging.basicConfig(level=logging.INFO)
 
-# Custom CSS for Bloomberg / Slate Financial Terminal Aesthetics
+# Scoped CSS for Modern Slate Financial Intelligence Terminal
 st.markdown(
     """
     <style>
-    /* Global Typography and Terminal Feel */
+    /* Scoped Typography & Base */
     .stApp {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     }
-    
-    /* Metrics Ribbon Container */
-    .telemetry-ribbon {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        padding: 10px 14px;
-        background: linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.9));
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 8px;
-        margin-bottom: 14px;
-        font-size: 0.82rem;
+
+    /* Bordered Container Muted Slate Accents */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: #2b313e !important;
+        border-radius: 8px !important;
+        padding: 0.5rem !important;
     }
-    .telemetry-item {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        color: #cbd5e1;
-    }
-    .telemetry-label {
-        color: #94a3b8;
-        font-weight: 500;
-        text-transform: uppercase;
-        font-size: 0.72rem;
-        letter-spacing: 0.05em;
-    }
-    .telemetry-value {
-        font-weight: 700;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    }
-    .badge-passed {
-        background-color: rgba(16, 185, 129, 0.2);
-        color: #10b981;
-        border: 1px solid rgba(16, 185, 129, 0.4);
+
+    /* Match Quality Badges */
+    .badge-conf-high {
+        background-color: rgba(16, 185, 129, 0.15);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.35);
         padding: 2px 8px;
         border-radius: 4px;
+        font-size: 0.75rem;
         font-weight: 600;
     }
-    .badge-refused {
-        background-color: rgba(245, 158, 11, 0.2);
-        color: #f59e0b;
-        border: 1px solid rgba(245, 158, 11, 0.4);
+    .badge-conf-low {
+        background-color: rgba(245, 158, 11, 0.15);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.35);
         padding: 2px 8px;
         border-radius: 4px;
+        font-size: 0.75rem;
         font-weight: 600;
     }
-    
-    /* Source Pill Badges */
+
+    /* Source Metadata Badges */
     .source-pill {
         display: inline-block;
-        padding: 3px 8px;
-        margin: 2px 4px 2px 0;
+        padding: 2px 6px;
+        margin: 1px 3px;
         border-radius: 4px;
-        font-size: 0.78rem;
+        font-size: 0.74rem;
         font-weight: 600;
         font-family: ui-monospace, monospace;
     }
     .pill-date {
-        background: rgba(59, 130, 246, 0.15);
-        color: #60a5fa;
-        border: 1px solid rgba(59, 130, 246, 0.3);
+        background: rgba(59, 130, 246, 0.12);
+        color: #93c5fd;
+        border: 1px solid rgba(59, 130, 246, 0.25);
     }
     .pill-page {
-        background: rgba(168, 85, 247, 0.15);
-        color: #c084fc;
-        border: 1px solid rgba(168, 85, 247, 0.3);
+        background: rgba(168, 85, 247, 0.12);
+        color: #d8b4fe;
+        border: 1px solid rgba(168, 85, 247, 0.25);
     }
-    .pill-conf-high {
-        background: rgba(34, 197, 94, 0.15);
-        color: #4ade80;
-        border: 1px solid rgba(34, 197, 94, 0.3);
+    .pill-score {
+        background: rgba(148, 163, 184, 0.12);
+        color: #cbd5e1;
+        border: 1px solid rgba(148, 163, 184, 0.25);
     }
-    .pill-conf-med {
-        background: rgba(56, 189, 248, 0.15);
-        color: #38bdf8;
-        border: 1px solid rgba(56, 189, 248, 0.3);
-    }
-    
-    /* Refusal Audit Card */
-    .refusal-card {
-        background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(217, 119, 6, 0.03));
+
+    /* Refusal Compliance Card */
+    .refusal-container {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(217, 119, 6, 0.02));
         border: 1px solid rgba(245, 158, 11, 0.3);
         border-radius: 8px;
-        padding: 16px;
-        margin-top: 10px;
+        padding: 14px;
+        margin-top: 8px;
     }
-    .refusal-title {
+    .refusal-header {
         color: #f59e0b;
         font-weight: 700;
-        font-size: 0.95rem;
+        font-size: 0.92rem;
         margin-bottom: 6px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
     }
-    .refusal-body {
-        color: #e2e8f0;
+    .refusal-text {
+        color: #f1f5f9;
         font-size: 0.88rem;
         line-height: 1.5;
     }
-    .refusal-footer {
+    .refusal-note {
         color: #94a3b8;
-        font-size: 0.75rem;
-        margin-top: 10px;
-        border-top: 1px dashed rgba(148, 163, 184, 0.2);
-        padding-top: 8px;
-    }
-
-    /* Prompt Chip Buttons */
-    .chip-container {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
+        font-size: 0.74rem;
         margin-top: 8px;
-        margin-bottom: 20px;
+        border-top: 1px dashed rgba(148, 163, 184, 0.2);
+        padding-top: 6px;
     }
     </style>
     """,
@@ -255,27 +219,155 @@ except Exception as e:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Modal Dialog: Document Inspection Drilldown
+# ─────────────────────────────────────────────────────────────────────────────
+
+if hasattr(st, "dialog"):
+
+    @st.dialog("Document Inspection")
+    def inspect_document_modal(
+        title: str,
+        edition_date: str,
+        page_number: int,
+        text: str,
+        score: float,
+        has_table: bool,
+    ) -> None:
+        """Modal dialog for deep inspection of retrieved publication passages."""
+        st.markdown(f"#### 📄 {title or f'Publication Edition {edition_date} — Page {page_number}'}")
+
+        with st.container(border=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Edition Date", str(edition_date))
+            with c2:
+                st.metric("Page Number", str(page_number))
+            with c3:
+                st.metric("Match Score", f"{score:.4f}")
+
+        if has_table or "|" in text:
+            tab1, tab2 = st.tabs(["Formatted Table", "Raw Source Context"])
+            with tab1:
+                st.markdown(text)
+            with tab2:
+                st.code(text, language="markdown")
+        else:
+            st.markdown(text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper Component: Telemetry Ribbon Container
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def render_telemetry_ribbon(telem: dict) -> None:
+    """Renders structured telemetry metrics in a 4-column bordered container."""
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        with c1:
+            st.metric(
+                "Total Latency",
+                f"{telem.get('total_ms', 0):.0f} ms",
+                help="End-to-end retrieval, reranking, and generation latency.",
+            )
+        with c2:
+            st.metric(
+                "Top-1 Score",
+                f"{telem.get('top_score', 0.0):.4f}",
+                help="Cross-encoder relevance score of top candidate.",
+            )
+        with c3:
+            st.metric(
+                "Temporal Boost",
+                f"{telem.get('time_decay', 1.0):.2f}x",
+                help="Exponential recency decay multiplier based on edition date.",
+            )
+        with c4:
+            is_refused = telem.get("refused", False)
+            st.metric(
+                "Safety Gate",
+                "Refused" if is_refused else "Passed",
+                help="Deterministic threshold evaluation (θ = 0.25).",
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper Component: Source Inspection Expander
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def render_citation_expander(citations: list[dict], message_idx: int | str) -> None:
+    """Renders verified source passages inside an expander with confidence badges and table tabs."""
+    with st.expander("🔍 View Verified Source Passages"):
+        for p_idx, c in enumerate(citations, start=1):
+            is_high = c["cross_encoder_score"] >= 0.60
+            conf_badge = (
+                '<span class="badge-conf-high">Confidence: High</span>'
+                if is_high
+                else '<span class="badge-conf-low">Confidence: Low</span>'
+            )
+            st.markdown(
+                f"""
+                <div style="margin-bottom: 6px;">
+                    <span style="font-weight: 700; color: #f1f5f9;">Passage {p_idx}</span> &nbsp;
+                    {conf_badge} &nbsp;
+                    <span class="source-pill pill-date">📅 {c['edition_date']}</span>
+                    <span class="source-pill pill-page">📄 Page {c['page_number']}</span>
+                    <span class="source-pill pill-score">⭐ Score {c['cross_encoder_score']:.4f}</span>
+                    {f"<span style='color: #cbd5e1; font-weight: 500; margin-left: 6px;'>{c['article_title']}</span>" if c.get('article_title') else ""}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            passage_text = c["text"]
+            if c.get("has_table") or "|" in passage_text:
+                tab1, tab2 = st.tabs(["Formatted Table", "Raw Source Context"])
+                with tab1:
+                    st.markdown(passage_text)
+                with tab2:
+                    st.code(passage_text, language="markdown")
+            else:
+                st.caption(passage_text)
+
+            if hasattr(st, "dialog"):
+                btn_key = f"inspect_{message_idx}_{c['edition_date']}_{c['page_number']}_{p_idx}"
+                if st.button(f"🔍 Document Inspection (Passage {p_idx})", key=btn_key):
+                    inspect_document_modal(
+                        title=c.get("article_title", ""),
+                        edition_date=str(c["edition_date"]),
+                        page_number=c["page_number"],
+                        text=passage_text,
+                        score=c["cross_encoder_score"],
+                        has_table=bool(c.get("has_table", False)),
+                    )
+
+            st.divider()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Sidebar: Terminal Telemetry & Payload Metadata Filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.markdown("### 🏛️ Terminal Telemetry & Filters")
-    st.caption("Hardware-isolated read plane connected to Qdrant Cloud Free Tier.")
+    st.caption("Hardware-isolated read plane connected to Qdrant Cloud.")
 
     # Live telemetry cards
     process = psutil.Process()
     rss_mb = process.memory_info().rss / (1024 * 1024)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("RAM RSS", f"{rss_mb:.1f} MB")
-    with col2:
-        st.metric("Reranker", "TinyBERT" if ranker_available else "RRF Only")
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("RAM RSS", f"{rss_mb:.1f} MB")
+        with col2:
+            st.metric("Reranker", "TinyBERT" if ranker_available else "RRF Only")
 
     st.divider()
 
     st.markdown("#### 🎯 Retrieval Payload Filters")
-    st.caption("Leverages server-side Qdrant payload indexes (`edition_date`, `has_table`, `page_number`).")
+    st.caption("Server-side Qdrant payload indexes (`edition_date`, `has_table`, `page_number`).")
 
     # Date filter
     filter_date = st.text_input(
@@ -333,7 +425,7 @@ st.title("📈 WealthChronicle Search")
 st.markdown("##### *Institutional Financial Intelligence & Archive Research Terminal*")
 st.info("⚠️ **Disclaimer:** Educational research tool indexing archived publications. Does not constitute registered financial, legal, or tax advisory services.")
 
-# Initialize session state
+# Defensive session state initialization
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
@@ -345,95 +437,47 @@ if "pending_query" not in st.session_state:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Suggested Query Chips (Empty State UX)
+# Empty State UX: Suggested Research Inquiries (Bordered Container, 4 Columns)
 # ─────────────────────────────────────────────────────────────────────────────
 
 if len(st.session_state["messages"]) == 0:
-    st.markdown("#### 💡 Suggested Research Inquiries")
-    st.caption("Click any prompt to execute instant hybrid retrieval against the verified publication archives:")
+    with st.container(border=True):
+        st.markdown("#### 💡 Institutional Research Inquiries")
+        st.caption("Select a prompt to execute hybrid dense + BM42 retrieval against verified financial archives:")
 
-    chip_cols = st.columns(2)
-    sample_queries = [
-        ("💼 New vs Old Tax Regime slabs for FY 2025-26", "New vs Old Tax Regime slabs for FY 2025-26"),
-        ("📈 Capital gains taxation changes on Arbitrage & Debt funds", "Capital gains taxation changes on Arbitrage & Debt funds"),
-        ("🏥 Health insurance deductible limits for senior citizens", "Health insurance deductible limits for senior citizens"),
-        ("🌐 FAST-DS foreign asset reporting guidelines", "FAST-DS foreign asset reporting guidelines"),
-    ]
-
-    for idx, (label, query_val) in enumerate(sample_queries):
-        target_col = chip_cols[idx % 2]
-        if target_col.button(label, key=f"chip_{idx}", use_container_width=True):
-            st.session_state["pending_query"] = query_val
-            st.rerun()
+        c1, c2, c3, c4 = st.columns(4)
+        sample_queries = [
+            ("💼 Tax Slabs FY 2025-26", "New vs Old Tax Regime slabs for FY 2025-26"),
+            ("📈 Capital Gains on Debt Funds", "Capital gains taxation changes on Arbitrage & Debt funds"),
+            ("🏥 Senior Health Insurance", "Health insurance deductible limits for senior citizens"),
+            ("🌐 FAST-DS Asset Reporting", "FAST-DS foreign asset reporting guidelines"),
+        ]
+        cols = [c1, c2, c3, c4]
+        for idx, (label, query_val) in enumerate(sample_queries):
+            if cols[idx].button(label, key=f"chip_{idx}", use_container_width=True):
+                st.session_state["pending_query"] = query_val
+                st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Render Chat History with Rich Citations & Telemetry
+# Render Chat History with Telemetry & Citations
 # ─────────────────────────────────────────────────────────────────────────────
 
-for msg in st.session_state["messages"]:
+for msg_idx, msg in enumerate(st.session_state["messages"]):
     with st.chat_message(msg["role"]):
-        # If assistant message has stored telemetry, display the telemetry ribbon
         if msg["role"] == "assistant" and "telemetry" in msg:
-            telem = msg["telemetry"]
-            gate_badge = (
-                '<span class="badge-refused">REFUSED</span>'
-                if telem.get("refused")
-                else '<span class="badge-passed">PASSED</span>'
-            )
-            st.markdown(
-                f"""
-                <div class="telemetry-ribbon">
-                    <div class="telemetry-item"><span class="telemetry-label">Latency:</span> <span class="telemetry-value">{telem.get('total_ms', 0):.0f} ms</span></div>
-                    <div class="telemetry-item"><span class="telemetry-label">Top-1 Score:</span> <span class="telemetry-value">{telem.get('top_score', 0.0):.4f}</span></div>
-                    <div class="telemetry-item"><span class="telemetry-label">Temporal Boost:</span> <span class="telemetry-value">{telem.get('time_decay', 1.0):.2f}x</span></div>
-                    <div class="telemetry-item"><span class="telemetry-label">Safety Gate:</span> {gate_badge}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            render_telemetry_ribbon(msg["telemetry"])
 
         st.markdown(msg["content"])
 
-        # Render expandable citations if present
         if msg["role"] == "assistant" and "citations" in msg and msg["citations"]:
-            with st.expander("🔍 View Verified Source Passages"):
-                for c in msg["citations"]:
-                    conf_class = "pill-conf-high" if c["cross_encoder_score"] >= 0.60 else "pill-conf-med"
-                    conf_label = "High Confidence" if c["cross_encoder_score"] >= 0.60 else "Supporting Context"
-
-                    st.markdown(
-                        f"""
-                        <div>
-                            <span class="source-pill pill-date">📅 {c['edition_date']}</span>
-                            <span class="source-pill pill-page">📄 Page {c['page_number']}</span>
-                            <span class="source-pill {conf_class}">⭐ {conf_label} ({c['cross_encoder_score']:.4f})</span>
-                            {f"<b>{c['article_title']}</b>" if c.get('article_title') else ""}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    # Table-aware presentation
-                    passage_text = c["text"]
-                    if c.get("has_table") or "|" in passage_text:
-                        tab1, tab2 = st.tabs(["Formatted Passage", "Raw Markdown"])
-                        with tab1:
-                            st.markdown(passage_text)
-                        with tab2:
-                            st.code(passage_text, language="markdown")
-                    else:
-                        st.caption(passage_text)
-
-                    st.divider()
+            render_citation_expander(msg["citations"], message_idx=msg_idx)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Query Input & Execution
+# Query Input & Pipeline Execution
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Handle pending query from chips if set
-input_default = ""
 if st.session_state.get("pending_query"):
     user_query = st.session_state["pending_query"]
     st.session_state["pending_query"] = None
@@ -460,36 +504,38 @@ if user_query:
         st.markdown(user_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching and reranking publication archives..."):
-            # Initialize execution trace
-            trace = QueryTrace(
-                trace_id=str(uuid.uuid4()),
-                query=user_query,
-                timestamp_utc=datetime.now(timezone.utc).isoformat(),
-            )
-            overall_start = datetime.now(timezone.utc)
+        # Initialize execution trace
+        trace = QueryTrace(
+            trace_id=str(uuid.uuid4()),
+            query=user_query,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        )
+        overall_start = datetime.now(timezone.utc)
 
-            try:
-                # ─── 1. Build Payload Filter (if specified in sidebar) ───
-                filter_conditions: list[models.Condition] = []
-                if filter_date:
-                    filter_conditions.append(
-                        models.FieldCondition(
-                            key="edition_date",
-                            match=models.MatchValue(value=filter_date),
-                        )
+        try:
+            # ─── 1. Build Payload Filter ───
+            filter_conditions: list[models.Condition] = []
+            if filter_date:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="edition_date",
+                        match=models.MatchValue(value=filter_date),
                     )
-                if filter_tables_only:
-                    filter_conditions.append(
-                        models.FieldCondition(
-                            key="has_table",
-                            match=models.MatchValue(value=True),
-                        )
+                )
+            if filter_tables_only:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="has_table",
+                        match=models.MatchValue(value=True),
                     )
+                )
 
-                query_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+            query_filter = models.Filter(must=filter_conditions) if filter_conditions else None
 
-                # ─── TASK-4.2: Hybrid Retrieval Orchestrator (Qdrant Native) ───
+            # ─── Multi-Step Progress Tracking with st.status ───
+            with st.status("Executing hybrid retrieval pipeline...", expanded=True) as status_box:
+                # Hybrid Search
+                status_box.write("⚡ Prefetching Hybrid Vectors (Dense BAAI 384d + Sparse BM42)...")
                 with timer(trace, "hybrid_search_ms"):
                     fused_candidates = hybrid_search(
                         client=qdrant_client,
@@ -503,7 +549,9 @@ if user_query:
                     )
                     trace.fused_candidates = len(fused_candidates)
 
-                # ─── 2. Cross-Encoder Reranking ───
+                # Reranking
+                status_box.write("🔄 Computing RRF & Temporal Decay Fusion...")
+                status_box.write("🎯 FlashRank TinyBERT Cross-Encoder Reranking...")
                 with timer(trace, "reranking_ms"):
                     fused_ids = [c["point_id"] for c in fused_candidates]
                     payload_map: dict[str, ChunkPayload] = {}
@@ -531,162 +579,137 @@ if user_query:
                     trace.reranked_top_k = len(reranked)
                     trace.top1_cross_encoder_score = reranked[0].cross_encoder_score if reranked else 0.0
 
-                # ─── 3. Deterministic Refusal Check ───
+                # Deterministic Refusal Check
+                status_box.write("🛡️ Evaluating Institutional Refusal Guardrails (θ = 0.25)...")
                 refused = should_refuse(reranked, prompts)
                 trace.refused = refused
 
                 top_score = reranked[0].cross_encoder_score if reranked else 0.0
                 time_decay = reranked[0].time_decay_multiplier if reranked else 1.0
 
-                citations: list[dict] = []
+                if not refused:
+                    status_box.write("✨ Synthesizing grounded response with Gemini 2.5 Flash...")
 
-                if refused:
-                    refusal_text = prompts.get(
-                        "refusal_message",
-                        "The indexed publication archives do not contain sufficient guidance to answer this question authoritatively.",
-                    )
-                    st.markdown(
-                        f"""
-                        <div class="refusal-card">
-                            <div class="refusal-title">🛡️ Institutional Refusal Gate Triggered</div>
-                            <div class="refusal-body">{refusal_text}</div>
-                            <div class="refusal-footer">
-                                <b>Deterministic Guardrail Active:</b> Top cross-encoder relevance score ({top_score:.4f}) fell below institutional threshold (θ = 0.25). Synthesized hallucinations are suppressed.
-                            </div>
+                status_box.update(label="Retrieval & Ranking Pipeline Complete", state="complete", expanded=False)
+
+            citations: list[dict] = []
+
+            if refused:
+                refusal_text = prompts.get(
+                    "refusal_message",
+                    "The indexed publication archives do not contain sufficient guidance to answer this question authoritatively.",
+                )
+                st.markdown(
+                    f"""
+                    <div class="refusal-container">
+                        <div class="refusal-header">🛡️ Institutional Refusal Gate Triggered</div>
+                        <div class="refusal-text">{refusal_text}</div>
+                        <div class="refusal-note">
+                            <b>Deterministic Guardrail Active:</b> Top cross-encoder relevance score ({top_score:.4f}) fell below institutional threshold (θ = 0.25). Synthesized hallucinations are suppressed.
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                answer_text = refusal_text
+                trace.answer_length_chars = len(answer_text)
+                trace.citation_count = 0
+            else:
+                # ─── TASK-4.3: Structured Prompt Assembly & Generation ───
+                with timer(trace, "prompt_assembly_ms"):
+                    reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
+                    context_passages = "\n\n".join(
+                        [
+                            f"[Passage {i} | Edition: {p.payload.edition_date} | Page: {p.payload.page_number} | Section: {p.payload.article_title or 'Untitled'}]\n{p.text}"
+                            for i, p in enumerate(reranked_sorted, start=1)
+                        ]
                     )
-                    answer_text = refusal_text
-                    trace.answer_length_chars = len(answer_text)
-                    trace.citation_count = 0
-                else:
-                    # ─── TASK-4.3: Structured Prompt Assembly & Generation ───
-                    with timer(trace, "prompt_assembly_ms"):
-                        # Sort passages by edition_date descending for temporal grounding
-                        reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
-                        context_passages = "\n\n".join(
-                            [
-                                f"[Passage {i} | Edition: {p.payload.edition_date} | Page: {p.payload.page_number} | Section: {p.payload.article_title or 'Untitled'}]\n{p.text}"
-                                for i, p in enumerate(reranked_sorted, start=1)
-                            ]
+                    if "rag_synthesis_template" in prompts:
+                        full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_synthesis_template"].format(
+                            context_passages=context_passages, query=user_query
                         )
-                        if "rag_synthesis_template" in prompts:
-                            full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_synthesis_template"].format(
-                                context_passages=context_passages, query=user_query
-                            )
-                        else:
-                            context_str = "\n\n---\n\n".join(
-                                [f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted]
-                            )
-                            full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_prompt_template"].format(
-                                context=context_str, query=user_query
-                            )
-
-                    with timer(trace, "llm_total_ms"):
-                        guardrails = prompts.get("guardrails", {})
-                        generation_config = {
-                            "temperature": guardrails.get("temperature", 0.1),
-                            "top_p": guardrails.get("top_p", 0.95),
-                        }
-                        answer_text = safe_generate(
-                            gemini_model, full_prompt, rate_limiter, generation_config=generation_config
+                    else:
+                        context_str = "\n\n---\n\n".join(
+                            [f"[Edition: {p.payload.edition_date} | Page: {p.payload.page_number}]\n{p.text}" for p in reranked_sorted]
+                        )
+                        full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_prompt_template"].format(
+                            context=context_str, query=user_query
                         )
 
-                    # Post-generation citation verification
-                    citations_valid, ungrounded_dates = validate_citations(answer_text, reranked_sorted)
-                    if not citations_valid:
-                        logging.warning(
-                            f"CITATION_HALLUCINATION: Answer contains ungrounded citations: {ungrounded_dates}"
-                        )
-                        answer_text += "\n\n*Note: Citations verified against retrieved archive passages.*"
-                    trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
-
-                    # Display Telemetry Ribbon
-                    trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
-                    st.markdown(
-                        f"""
-                        <div class="telemetry-ribbon">
-                            <div class="telemetry-item"><span class="telemetry-label">Latency:</span> <span class="telemetry-value">{trace.total_ms:.0f} ms</span></div>
-                            <div class="telemetry-item"><span class="telemetry-label">Top-1 Score:</span> <span class="telemetry-value">{top_score:.4f}</span></div>
-                            <div class="telemetry-item"><span class="telemetry-label">Temporal Boost:</span> <span class="telemetry-value">{time_decay:.2f}x</span></div>
-                            <div class="telemetry-item"><span class="telemetry-label">Safety Gate:</span> <span class="badge-passed">PASSED</span></div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
+                with timer(trace, "llm_total_ms"):
+                    guardrails = prompts.get("guardrails", {})
+                    generation_config = {
+                        "temperature": guardrails.get("temperature", 0.1),
+                        "top_p": guardrails.get("top_p", 0.95),
+                    }
+                    answer_text = safe_generate(
+                        gemini_model, full_prompt, rate_limiter, generation_config=generation_config
                     )
 
-                    st.markdown(answer_text)
-                    trace.answer_length_chars = len(answer_text)
+                # Citation Verification
+                citations_valid, ungrounded_dates = validate_citations(answer_text, reranked_sorted)
+                if not citations_valid:
+                    logging.warning(
+                        f"CITATION_HALLUCINATION: Answer contains ungrounded citations: {ungrounded_dates}"
+                    )
+                    answer_text += "\n\n*Note: Citations verified against retrieved archive passages.*"
+                trace.citation_count = len(re.findall(r"\[Edition:\s*[^\]]+\]", answer_text))
 
-                    # Prepare citations for expander
-                    citations = [
-                        {
-                            "edition_date": str(p.payload.edition_date),
-                            "page_number": p.payload.page_number,
-                            "cross_encoder_score": p.cross_encoder_score,
-                            "text": p.text,
-                            "article_title": p.payload.article_title,
-                            "has_table": getattr(p.payload, "has_table", False),
-                        }
-                        for p in reranked_sorted
-                    ]
-
-                    # TASK-4.4: Interactive citation expander
-                    with st.expander("🔍 View Verified Source Passages"):
-                        for p in reranked_sorted:
-                            conf_class = "pill-conf-high" if p.cross_encoder_score >= 0.60 else "pill-conf-med"
-                            conf_label = "High Confidence" if p.cross_encoder_score >= 0.60 else "Supporting Context"
-
-                            st.markdown(
-                                f"""
-                                <div>
-                                    <span class="source-pill pill-date">📅 {p.payload.edition_date}</span>
-                                    <span class="source-pill pill-page">📄 Page {p.payload.page_number}</span>
-                                    <span class="source-pill {conf_class}">⭐ {conf_label} ({p.cross_encoder_score:.4f})</span>
-                                    {f"<b>{p.payload.article_title}</b>" if p.payload.article_title else ""}
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-
-                            if getattr(p.payload, "has_table", False) or "|" in p.text:
-                                tab1, tab2 = st.tabs(["Formatted Passage", "Raw Markdown"])
-                                with tab1:
-                                    st.markdown(p.text)
-                                with tab2:
-                                    st.code(p.text, language="markdown")
-                            else:
-                                st.caption(p.text)
-
-                            st.divider()
-
-                # Finalize trace timing & telemetry
+                # Display Telemetry Ribbon
                 trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
-                trace.emit()
-
-                # Append assistant message to session state
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": answer_text,
-                    "telemetry": {
-                        "total_ms": trace.total_ms,
-                        "top_score": top_score,
-                        "time_decay": time_decay,
-                        "refused": refused,
-                    },
+                telemetry_data = {
+                    "total_ms": trace.total_ms,
+                    "top_score": top_score,
+                    "time_decay": time_decay,
+                    "refused": False,
                 }
-                if citations:
-                    assistant_msg["citations"] = citations
-                st.session_state["messages"].append(assistant_msg)
+                render_telemetry_ribbon(telemetry_data)
 
-                if len(st.session_state["messages"]) > MAX_MESSAGES:
-                    st.session_state["messages"] = st.session_state["messages"][-MAX_MESSAGES:]
+                st.markdown(answer_text)
+                trace.answer_length_chars = len(answer_text)
 
-            except Exception as e:
-                logging.error(f"Query pipeline failed: {e}", exc_info=True)
-                err_msg = f"An error occurred while processing your query: {e}"
-                st.error(err_msg)
-                trace.refused = True
-                trace.emit()
-                st.session_state["messages"].append({"role": "assistant", "content": err_msg})
+                # Prepare citations
+                citations = [
+                    {
+                        "edition_date": str(p.payload.edition_date),
+                        "page_number": p.payload.page_number,
+                        "cross_encoder_score": p.cross_encoder_score,
+                        "text": p.text,
+                        "article_title": p.payload.article_title,
+                        "has_table": getattr(p.payload, "has_table", False),
+                    }
+                    for p in reranked_sorted
+                ]
+
+                # Render Citation Expander
+                render_citation_expander(citations, message_idx=len(st.session_state["messages"]))
+
+            # Finalize Trace
+            trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
+            trace.emit()
+
+            # Append assistant message
+            assistant_msg = {
+                "role": "assistant",
+                "content": answer_text,
+                "telemetry": {
+                    "total_ms": trace.total_ms,
+                    "top_score": top_score,
+                    "time_decay": time_decay,
+                    "refused": refused,
+                },
+            }
+            if citations:
+                assistant_msg["citations"] = citations
+            st.session_state["messages"].append(assistant_msg)
+
+            if len(st.session_state["messages"]) > MAX_MESSAGES:
+                st.session_state["messages"] = st.session_state["messages"][-MAX_MESSAGES:]
+
+        except Exception as e:
+            logging.error(f"Query pipeline failed: {e}", exc_info=True)
+            err_msg = f"An error occurred while processing your query: {e}"
+            st.error(err_msg)
+            trace.refused = True
+            trace.emit()
+            st.session_state["messages"].append({"role": "assistant", "content": err_msg})
