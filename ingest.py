@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import pymupdf4llm
 from fastembed import SparseTextEmbedding, TextEmbedding
@@ -98,6 +99,9 @@ _FOOTER_PATTERN = re.compile(r"\*\*\*This PDF download is allowed by Economic Ti
 _EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 _BANNER_PATTERN = re.compile(r"www\.etwealth\.co\s*\|.*", re.IGNORECASE)
 _STATUTORY_WARNING_PHRASE = "Mutual Fund investments are subject to market risks"
+
+# Table separator pattern for markdown tables (matches |---|---|, |:---|---:|, etc.)
+SEPARATOR_PATTERN = re.compile(r"^\s*\|?(?:\s*:?---+:?\s*\|)+\s*$")
 
 # Month mapping for date parser
 _MONTH_MAP = {
@@ -307,8 +311,8 @@ def _split_table_blocks(text: str) -> list[tuple[str, str]]:
         stripped = line.strip()
         # Detect markdown table line: contains '|' and has at least 2 pipes or table separator
         is_table_line = ("|" in line) and (stripped.startswith("|") or " | " in line or stripped.count("|") >= 2)
-        # Also consider separator lines like |---|---| or |:---|
-        is_separator = bool(re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", line)) if is_table_line else False
+        # Separator lines are checked independently - they may not start with | but still be table-related
+        is_separator = bool(SEPARATOR_PATTERN.match(line))
 
         if is_table_line or is_separator:
             # If we were building prose, flush it
@@ -363,13 +367,13 @@ def _chunk_table_atomic(table_text: str, prefix: str, max_tokens: int = 800) -> 
 
     # Check if header line contains both header and separator (collapsed newlines)
     # Pattern: | Header | Header | ... |---|---|...
-    header_sep_match = re.search(r"(\|.*\|)\s*(\|?\s*:?-+:?\s*\|.*)$", header)
+    header_sep_match = re.search(r"^(\|.*?\|)\s*(\|?\s*:?---+:?\s*\|.*)$", header)
     if header_sep_match and not separator:
         # Split header and separator
         header = header_sep_match.group(1).rstrip()
         separator = header_sep_match.group(2).strip()
         data_start_idx = 1  # Data rows start from next line
-    elif len(rows) > 1 and re.match(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$", rows[1]):
+    elif len(rows) > 1 and SEPARATOR_PATTERN.match(rows[1]):
         separator = rows[1]
         data_start_idx = 2
 
@@ -654,11 +658,9 @@ def extract_edition_date_from_text(text: str) -> str | None:
         month_str = m.group(1).lower()
         day = m.group(2)
         year = m.group(3)
-        month_num = _MONTH_MAP.get(month_str[:3] if len(month_str) > 3 else month_str, None)
-        # Handle full month vs abbreviation: lookup first 3 chars lower
-        if not month_num:
-            # Try full name
-            month_num = _MONTH_MAP.get(month_str, None)
+        # Normalize month lookup: use first 3 chars for both full names and abbreviations
+        month_key = month_str[:3]
+        month_num = _MONTH_MAP.get(month_key, None)
         if month_num:
             try:
                 # Validate date
@@ -677,7 +679,9 @@ def extract_edition_date_from_text(text: str) -> str | None:
         day = m2.group(1)
         month_str = m2.group(2).lower()
         year = m2.group(3)
-        month_num = _MONTH_MAP.get(month_str[:3], _MONTH_MAP.get(month_str, None))
+        # Normalize month lookup: use first 3 chars for both full names and abbreviations
+        month_key = month_str[:3]
+        month_num = _MONTH_MAP.get(month_key, None)
         if month_num:
             try:
                 datetime(int(year), int(month_num), int(day))
@@ -694,7 +698,9 @@ def extract_edition_date_from_text(text: str) -> str | None:
     if m3:
         month_str = m3.group(1).lower()
         year = m3.group(2)
-        month_num = _MONTH_MAP.get(month_str, None)
+        # Normalize month lookup: use first 3 chars for both full names and abbreviations
+        month_key = month_str[:3]
+        month_num = _MONTH_MAP.get(month_key, None)
         if month_num:
             return f"{year}-{month_num}-01"
 
@@ -775,7 +781,12 @@ def init_collection(client: QdrantClient, collection_name: str = COLLECTION_NAME
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantClient | None = None) -> int:
+def ingest_pdf(
+    pdf_path: str,
+    edition_date: str | None = None,
+    client: QdrantClient | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> int:
     """Full ingestion pipeline for a single PDF.
 
     Steps:
@@ -794,11 +805,18 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         pdf_path: Path to PDF file
         edition_date: Edition date YYYY-MM-DD. If None, auto-detected from PDF first page header.
         client: Optional QdrantClient for testing (in-memory).
+        progress_callback: Optional callback function to report progress steps.
 
     Returns:
         Number of chunks ingested.
     """
     import os
+
+    def _report(step: str) -> None:
+        if progress_callback:
+            progress_callback(step)
+        else:
+            print(step)
 
     # Auto-detect edition_date if not provided
     if edition_date is None:
@@ -810,14 +828,14 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
                 detected = extract_edition_date_from_text(first_page_text)
                 if detected:
                     edition_date = detected
-                    print(f"[INFO] Auto-detected edition date: {edition_date}")
+                    _report(f"[INFO] Auto-detected edition date: {edition_date}")
                 else:
                     # Fallback try filename pattern YYYY-MM-DD
                     fname = Path(pdf_path).stem
                     m = re.search(r"(\d{4}-\d{2}-\d{2})", fname)
                     if m:
                         edition_date = m.group(1)
-                        print(f"[INFO] Inferred edition date from filename: {edition_date}")
+                        _report(f"[INFO] Inferred edition date from filename: {edition_date}")
                     else:
                         raise ValueError("Could not auto-detect edition date from PDF header or filename. Please provide YYYY-MM-DD explicitly.")
             else:
@@ -840,20 +858,23 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         qdrant_url = os.environ.get("QDRANT_URL")
         qdrant_key = os.environ.get("QDRANT_ADMIN_KEY") or os.environ.get("QDRANT_API_KEY")
         client, mode = get_qdrant_client(url=qdrant_url, api_key=qdrant_key)
-        print(f"[*] Connected to Qdrant (Storage mode: {mode})")
+        _report(f"[*] Connected to Qdrant (Storage mode: {mode})")
 
-    print(f"[*] Parsing {pdf_path} (Edition: {edition_date})...")
+    _report(f"[*] Parsing {pdf_path} (Edition: {edition_date})...")
 
     # 1. Extract pages
+    _report("[*] Extracting pages...")
     pages = extract_pages(pdf_path)
 
     # 1b. Clean extracted text immediately after extract_pages (watermark sanitization)
+    _report("[*] Sanitizing extracted text...")
     for p in pages:
         original = p.get("text", "")
         cleaned = clean_extracted_text(original)
         p["text"] = cleaned
 
     # 2. Validate extraction
+    _report("[*] Validating extraction...")
     validate_extraction(pages, pdf_path)
 
     # 3-6. Chunk and build payloads
@@ -915,17 +936,17 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
             all_point_ids.append(point_id)
 
     if not all_texts:
-        print("[!] No chunks generated after filtering. Check PDF content.")
+        _report("[!] No chunks generated after filtering. Check PDF content.")
         return 0
 
-    print(f"[*] Generating embeddings for {len(all_texts)} chunks...")
+    _report(f"[*] Generating embeddings for {len(all_texts)} chunks...")
 
     # 7. Generate both dense and sparse embeddings
-    print("[*] Generating dense embeddings (BAAI/bge-small-en-v1.5)...")
+    _report("[*] Generating dense embeddings (BAAI/bge-small-en-v1.5)...")
     dense_embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
     dense_embeddings = list(dense_embedding_model.embed(all_texts, batch_size=32))
 
-    print("[*] Generating sparse embeddings (Qdrant/bm42-all-minilm-l6-v2-attentions)...")
+    _report("[*] Generating sparse embeddings (Qdrant/bm42-all-minilm-l6-v2-attentions)...")
     sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
     sparse_embeddings = list(sparse_embedding_model.embed(all_texts, batch_size=32))
 
@@ -959,28 +980,38 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         )
 
     # 9. Ensure collection and indexes, then upsert
+    _report("[*] Ensuring collection and payload indexes...")
     ensure_collection_exists(client)
 
-    # P0-4: Point collision & integrity guard
-    for point_id, payload in zip(all_point_ids, all_payloads):
-        try:
-            existing = client.retrieve(collection_name=COLLECTION_NAME, ids=[point_id], with_payload=True)
-            if existing and existing[0].payload:
-                existing_text = existing[0].payload.get("text", "")
-                if existing_text != payload.text:
+    # P0-4: Point collision & integrity guard (BATCH RETRIEVE - O(1) network round-trip)
+    _report("[*] Checking for point collisions...")
+    try:
+        existing_points = client.retrieve(
+            collection_name=COLLECTION_NAME,
+            ids=all_point_ids,
+            with_payload=True,
+        )
+        for existing in existing_points:
+            if existing.payload:
+                existing_text = existing.payload.get("text", "")
+                point_id = str(existing.id)
+                # Find the corresponding new payload
+                new_payload = next((p for p in all_payloads if generate_point_id(edition_date, p.page_number, all_payloads.index(p), p.text[:50]) == point_id), None)
+                if new_payload and existing_text != new_payload.text:
                     logging.warning(
                         f"POINT_COLLISION_DETECTED: point_id={point_id} has different text payload. "
-                        f"Existing: {existing_text[:100]}... New: {payload.text[:100]}..."
+                        f"Existing: {existing_text[:100]}... New: {new_payload.text[:100]}..."
                     )
-        except Exception as e:
-            logging.debug(f"Collision check failed for {point_id}: {e}")
+    except Exception as e:
+        logging.debug(f"Batch collision check failed: {e}")
 
     @with_qdrant_retry
     def _upsert():
         return client.upsert(collection_name=COLLECTION_NAME, points=points)
 
+    _report("[*] Upserting points to Qdrant...")
     _upsert()
-    print(f"[OK] Indexed {len(points)} chunks into Qdrant Cloud.")
+    _report(f"[OK] Indexed {len(points)} chunks into Qdrant.")
     return len(points)
 
 

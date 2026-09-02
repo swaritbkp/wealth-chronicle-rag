@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ─── Ingestion Domain ────────────────────────────────────────────────
 
@@ -125,6 +125,9 @@ class EvaluationCategory(str, Enum):
     INSURANCE_CLAIMS = "insurance_claims"
     RETIREMENT_NPS = "retirement_nps"
     ESTATE_SUCCESSION = "estate_succession"
+    REFUSAL = "refusal"
+    OUT_OF_DOMAIN = "out_of_domain"
+    UNSUPPORTED = "unsupported"
 
 
 class EvaluationItem(BaseModel):
@@ -145,14 +148,12 @@ class EvaluationItem(BaseModel):
         description="Verified human-authored reference answer",
     )
     source_edition_dates: list[date] = Field(
-        ...,
-        min_length=1,
-        description="Edition dates from which the ground truth was derived",
+        default_factory=list,
+        description="Edition dates from which the ground truth was derived (empty for refusal categories)",
     )
     source_pages: list[int] = Field(
-        ...,
-        min_length=1,
-        description="Page numbers from which the ground truth was derived",
+        default_factory=list,
+        description="Page numbers from which the ground truth was derived (empty for refusal categories)",
     )
     difficulty: Annotated[str, Field(pattern=r"^(easy|medium|hard)$", default="medium", description="Subjective difficulty for triage")]
 
@@ -168,3 +169,16 @@ class EvaluationItem(BaseModel):
                     result.append(item)
             return result
         return v
+
+    @model_validator(mode="after")
+    def validate_non_refusal_has_sources(self):
+        """Ensure non-refusal categories have source edition dates and pages."""
+        refusal_categories = {EvaluationCategory.REFUSAL, EvaluationCategory.OUT_OF_DOMAIN, EvaluationCategory.UNSUPPORTED}
+        if self.category in refusal_categories:
+            # This is a refusal/out_of_domain/unsupported category - empty lists are allowed
+            return self
+        if not self.source_edition_dates:
+            raise ValueError("source_edition_dates must not be empty for in-domain evaluation items")
+        if not self.source_pages:
+            raise ValueError("source_pages must not be empty for in-domain evaluation items")
+        return self

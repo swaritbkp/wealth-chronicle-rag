@@ -98,18 +98,25 @@ def evaluate_query_item(
     top_score = 0.0
     evaluated_candidates: list[Any] = []
     if candidates:
+        # Batch retrieve payloads for all candidate point_ids (O(1) network round-trip)
+        candidate_ids = [c.get("point_id", "") for c in candidates if c.get("point_id")]
         payload_map: dict[str, ChunkPayload] = {}
-        for c in candidates:
-            pid = c.get("point_id", "")
-            payload = c.get("payload")
-            if payload and pid:
-                if isinstance(payload, ChunkPayload):
-                    payload_map[pid] = payload
-                else:
-                    try:
-                        payload_map[pid] = ChunkPayload(**payload)
-                    except Exception:
-                        pass
+        if candidate_ids:
+            try:
+                retrieved = client.retrieve(
+                    collection_name="wealth_archive",
+                    ids=candidate_ids,
+                    with_payload=True,
+                )
+                for p in retrieved:
+                    if p.payload:
+                        try:
+                            payload_map[str(p.id)] = ChunkPayload(**p.payload)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logging.warning(f"Batch payload retrieval failed: {e}")
+
         if ranker and payload_map:
             reranked = rerank_candidates(query, candidates, payload_map, ranker, top_k=top_k)
             if reranked:
@@ -118,6 +125,11 @@ def evaluate_query_item(
             else:
                 evaluated_candidates = list(candidates[:top_k])
         else:
+            # Still need to attach payloads for hit evaluation
+            for c in candidates:
+                pid = c.get("point_id", "")
+                if pid in payload_map:
+                    c["payload"] = payload_map[pid]
             evaluated_candidates = list(candidates[:top_k])
     else:
         evaluated_candidates = []

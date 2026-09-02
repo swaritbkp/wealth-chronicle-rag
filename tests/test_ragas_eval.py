@@ -32,7 +32,10 @@ def rag_services():
     # Mock fallback for offline verification
     q_url = os.environ.get("QDRANT_URL", "")
     g_key = os.environ.get("GEMINI_API_KEY", "")
-    if not g_key or not q_url or "your-cluster" in q_url or "example" in q_url:
+    # Check for placeholder/missing credentials
+    if (not g_key or not q_url or 
+        "your-cluster" in q_url or "example" in q_url or
+        "your-gemini-api-key" in g_key or "placeholder" in g_key.lower()):
         # Offline mock — test will use dummy metrics and pass
         return {
             "gemini": None,

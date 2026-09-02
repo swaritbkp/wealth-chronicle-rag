@@ -263,67 +263,47 @@
   },
   {
     "id": "eval_021",
-    "category": "tax_regime",
+    "category": "refusal",
     "question": "Should I invest in Bitcoin for retirement planning?",
     "ground_truth": "The publication archives do not contain sufficient guidance on this topic. Cryptocurrency investments are not covered in the magazine's financial advisory content.",
-    "source_edition_dates": [
-      "2026-08-24"
-    ],
-    "source_pages": [
-      1
-    ],
+    "source_edition_dates": [],
+    "source_pages": [],
     "difficulty": "easy"
   },
   {
     "id": "eval_022",
-    "category": "tax_regime",
+    "category": "refusal",
     "question": "What is the capital gains tax rate for NFTs sold in 2026?",
     "ground_truth": "The publication archives do not contain sufficient guidance on this topic. NFT taxation is not addressed in the available edition.",
-    "source_edition_dates": [
-      "2026-08-24"
-    ],
-    "source_pages": [
-      1
-    ],
+    "source_edition_dates": [],
+    "source_pages": [],
     "difficulty": "easy"
   },
   {
     "id": "eval_023",
-    "category": "mutual_funds",
+    "category": "refusal",
     "question": "Which crypto exchange offers the best returns for Indian investors?",
     "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine focuses on traditional financial products like mutual funds, insurance, and fixed deposits.",
-    "source_edition_dates": [
-      "2026-08-24"
-    ],
-    "source_pages": [
-      1
-    ],
+    "source_edition_dates": [],
+    "source_pages": [],
     "difficulty": "easy"
   },
   {
     "id": "eval_024",
-    "category": "insurance_claims",
+    "category": "refusal",
     "question": "What is the claim settlement ratio for a specific private insurer not mentioned in the magazine?",
     "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine covers general insurance principles but not insurer-specific claim ratios.",
-    "source_edition_dates": [
-      "2026-08-24"
-    ],
-    "source_pages": [
-      1
-    ],
+    "source_edition_dates": [],
+    "source_pages": [],
     "difficulty": "medium"
   },
   {
     "id": "eval_025",
-    "category": "estate_succession",
+    "category": "refusal",
     "question": "What will be the Nifty 50 level on 31 December 2026?",
     "ground_truth": "The publication archives do not contain sufficient guidance on this topic. The magazine does not provide market predictions or speculative price targets.",
-    "source_edition_dates": [
-      "2026-08-24"
-    ],
-    "source_pages": [
-      1
-    ],
+    "source_edition_dates": [],
+    "source_pages": [],
     "difficulty": "medium"
   }
 ]

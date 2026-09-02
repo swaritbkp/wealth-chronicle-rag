@@ -174,6 +174,8 @@ def reciprocal_rank_fusion(
         payload = all_payloads.get(pid)
         if payload:
             delta_t = (reference_date - payload.edition_date).days
+            # Clamp negative delta_t (future dates) to 0 to prevent unbounded exponential boost
+            delta_t = max(0, delta_t)
             recency = 1.0 + RECENCY_ALPHA * math.exp(-delta_t / RECENCY_TAU)
         else:
             recency = 1.0  # No date metadata → no boost
@@ -473,6 +475,8 @@ def hybrid_search(
         payload = all_payloads.get(pid)
         if payload:
             delta_t = (reference_date - payload.edition_date).days
+            # Clamp negative delta_t (future dates) to 0 to prevent unbounded exponential boost
+            delta_t = max(0, delta_t)
             recency = 1.0 + RECENCY_ALPHA * math.exp(-delta_t / RECENCY_TAU)
         else:
             recency = 1.0
@@ -683,8 +687,8 @@ class GeminiRateLimiter:
             else:
                 sleep_time = 0
             self.last_request_time = now + max(sleep_time, 0)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
 
 def safe_generate(
@@ -706,6 +710,14 @@ def safe_generate(
     """
     rate_limiter.acquire()
 
+    # Import exception types once at module level would be better, but kept here for compatibility
+    try:
+        from google.api_core import exceptions as google_exceptions
+        from google.genai import errors as genai_errors
+    except ImportError:
+        google_exceptions = None  # type: ignore[assignment]
+        genai_errors = None  # type: ignore[assignment]
+
     for attempt in range(3):
         try:
             if generation_config:
@@ -714,18 +726,17 @@ def safe_generate(
                 response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            # Check for ResourceExhausted (429)
+            # Check for ResourceExhausted (429) using proper exception types
             is_429 = False
-            # google.api_core.exceptions.ResourceExhausted
-            if "ResourceExhausted" in type(e).__name__ or "429" in str(e) or "Quota" in str(e):
+            if google_exceptions and isinstance(e, google_exceptions.ResourceExhausted):
                 is_429 = True
-            try:
-                import google.api_core.exceptions
-
-                if isinstance(e, google.api_core.exceptions.ResourceExhausted):
+            elif genai_errors and isinstance(e, genai_errors.APIError):
+                # Check for 429 status code in genai errors
+                if getattr(e, "code", None) == 429 or "429" in str(e) or "quota" in str(e).lower():
                     is_429 = True
-            except ImportError:
-                pass
+            elif "429" in str(e) or "quota" in str(e).lower() or "ResourceExhausted" in type(e).__name__:
+                # Fallback string matching for other exception types
+                is_429 = True
 
             if is_429:
                 if attempt < 2:
@@ -792,7 +803,9 @@ def stream_synthesize_answer(
                     yield chunk_text
         except Exception as e:
             logger.warning(f"Streaming token yield failed: {e}. Falling back to standard generation.")
-            fallback = safe_generate(model, prompt, rate_limiter or GeminiRateLimiter(14), generation_config)
+            # Reuse the provided rate_limiter instead of creating a new one
+            fallback_limiter = rate_limiter or GeminiRateLimiter(14)
+            fallback = safe_generate(model, prompt, fallback_limiter, generation_config)
             yield fallback
     else:
         yield "The service model is temporarily unavailable."

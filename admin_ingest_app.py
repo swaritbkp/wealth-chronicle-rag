@@ -16,7 +16,6 @@ from typing import Any
 
 import psutil
 import streamlit as st
-from fastembed import SparseTextEmbedding, TextEmbedding
 from qdrant_client import QdrantClient, models
 
 from engine import (
@@ -24,17 +23,12 @@ from engine import (
 )
 from ingest import (
     COLLECTION_NAME,
-    clean_extracted_text,
     ensure_collection_exists,
     ensure_payload_indexes,
     extract_edition_date_from_text,
     extract_pages,
-    generate_chunk_id,
-    generate_point_id,
-    sliding_window_chunk,
-    validate_extraction,
+    ingest_pdf,
 )
-from schemas import ChunkPayload
 from telemetry import (
     fetch_recent_audit_logs,
     get_audit_summary_stats,
@@ -122,16 +116,7 @@ def get_qdrant_admin_client() -> tuple[QdrantClient, str]:
     return get_qdrant_client(url=qdrant_url, api_key=admin_key)
 
 
-@st.cache_resource
-def init_embedding_models():
-    """Cache dense and BM42 sparse embedding models for administrative vectorization."""
-    dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    sparse_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
-    return dense_model, sparse_model
-
-
 client, storage_mode = get_qdrant_admin_client()
-dense_model, sparse_model = init_embedding_models()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,84 +228,22 @@ def scan_corpus_directory(client: QdrantClient | None, data_dir: str = "data") -
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_pipeline_for_pdf(
+def ingest_pdf_with_progress(
     pdf_path: str,
     edition_date: str,
     client: QdrantClient,
-    dense_model: Any,
-    sparse_model: Any,
+    status_box: Any,
 ) -> int:
-    """Execute full 5-stage ingestion for a single PDF issue."""
-    # 1. Extraction & Sanitization
-    pages = extract_pages(pdf_path)
-    for p in pages:
-        p["text"] = clean_extracted_text(p.get("text", ""))
-
-    validate_extraction(pages, pdf_path)
-
-    # 2. Layout-Aware Chunking
-    all_texts: list[str] = []
-    all_payloads: list[ChunkPayload] = []
-    all_point_ids: list[str] = []
-
-    for item in pages:
-        meta = item.get("metadata", {})
-        page_0 = meta.get("page", 0)
-        page_num = page_0 + 1
-        raw_text = item["text"].strip()
-        if not raw_text:
-            continue
-
-        chunks = sliding_window_chunk(raw_text, chunk_size=600, overlap=100, min_chars=120)
-        for c_idx, chunk_text in enumerate(chunks):
-            pid = generate_point_id(edition_date, page_num, c_idx, chunk_text[:50])
-            cid = generate_chunk_id(edition_date, page_num, c_idx)
-            has_table = "|" in chunk_text and "\n|---" in chunk_text
-
-            payload = ChunkPayload(
-                chunk_id=cid,
-                edition_date=edition_date,
-                page_number=page_num,
-                text=chunk_text,
-                char_count=len(chunk_text),
-                word_count=len(chunk_text.split()),
-                source=Path(pdf_path).name,
-                article_title=f"Page {page_num}",
-                has_table=has_table,
-            )
-            all_texts.append(chunk_text)
-            all_payloads.append(payload)
-            all_point_ids.append(pid)
-
-    if not all_texts:
-        return 0
-
-    # 3. Vectorization with batch_size=32
-    dense_embs = list(dense_model.embed(all_texts, batch_size=32))
-    sparse_embs = list(sparse_model.embed(all_texts, batch_size=32))
-
-    # 4. Upsert Points
-    points: list[models.PointStruct] = []
-    for i in range(len(all_texts)):
-        dense_vec = dense_embs[i].tolist() if hasattr(dense_embs[i], "tolist") else list(dense_embs[i])
-        sp = sparse_embs[i]
-        sparse_vec = models.SparseVector(
-            indices=sp.indices.tolist() if hasattr(sp.indices, "tolist") else list(sp.indices),
-            values=sp.values.tolist() if hasattr(sp.values, "tolist") else list(sp.values),
-        )
-        points.append(
-            models.PointStruct(
-                id=all_point_ids[i],
-                vector={"dense": dense_vec, "sparse": sparse_vec},
-                payload=all_payloads[i].model_dump(),
-            )
-        )
-
-    ensure_collection_exists(client, COLLECTION_NAME)
-    ensure_payload_indexes(client, COLLECTION_NAME)
-
-    client.upsert(collection_name=COLLECTION_NAME, points=points, wait=True)
-    return len(points)
+    """Wrapper around ingest.ingest_pdf with Streamlit status updates."""
+    def progress_callback(step: str) -> None:
+        status_box.write(step)
+    
+    return ingest_pdf(
+        pdf_path=pdf_path,
+        edition_date=edition_date,
+        client=client,
+        progress_callback=progress_callback,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,12 +420,11 @@ if corpus_items and client:
 
             status_box.write(f"📄 Processing **{fname}** (Edition: `{ed_date}`)...")
             try:
-                num_chunks = run_pipeline_for_pdf(
+                num_chunks = ingest_pdf_with_progress(
                     pdf_path=fpath,
                     edition_date=ed_date,
                     client=client,
-                    dense_model=dense_model,
-                    sparse_model=sparse_model,
+                    status_box=status_box,
                 )
                 total_indexed_all += num_chunks
                 status_box.write(f"✅ **{fname}**: Indexed `{num_chunks}` chunks into Qdrant.")

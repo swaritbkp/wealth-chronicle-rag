@@ -106,7 +106,7 @@ class TestRRFRecencyMath:
         assert 1.01 < expected_recency < 1.05
 
     def test_recency_negative_delta_future_date(self) -> None:
-        # Future edition_date → negative Δt → recency > 1.35 (boost beyond today)
+        # Future edition_date → negative Δt → now clamped to 0 → recency = 1.35 (no boost beyond today)
         ref = date(2026, 8, 29)
         future = date(2026, 9, 15)
         payload = _make_payload(future.isoformat())
@@ -121,8 +121,8 @@ class TestRRFRecencyMath:
             )
         ]
         result = reciprocal_rank_fusion(dense, [("doc1", 1.0)], {"doc1": payload}, reference_date=ref)
-        # Δt = ref - future = -17 → exp(17/365) >1 → recency >1.35
-        assert result[0]["recency_multiplier"] > 1.35
+        # Δt = ref - future = -17 → clamped to 0 → recency = 1.35 (no future boost)
+        assert result[0]["recency_multiplier"] == pytest.approx(1.35, abs=1e-6)
         # Should not crash and should be finite
         assert math.isfinite(result[0]["recency_multiplier"])
 
