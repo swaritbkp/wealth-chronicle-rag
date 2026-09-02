@@ -23,14 +23,15 @@ from qdrant_client import models
 from engine import (
     GeminiRateLimiter,
     QueryTrace,
+    TimedStreamWrapper,
     check_memory_usage,
     get_qdrant_client,
     get_storage_mode,
     hybrid_search,
     load_and_validate_prompts,
     rerank_candidates,
-    safe_generate,
     should_refuse,
+    synthesize_answer,
     timer,
     validate_citations,
 )
@@ -263,9 +264,9 @@ if hasattr(st, "dialog"):
 
 
 def render_telemetry_ribbon(telem: dict) -> None:
-    """Renders structured telemetry metrics in a 4-column bordered container."""
+    """Renders structured telemetry metrics in a 5-column bordered container."""
     with st.container(border=True):
-        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        c1, c2, c3, c4, c5 = st.columns([1.5, 1.2, 1, 1, 1])
         with c1:
             st.metric(
                 "Total Latency",
@@ -273,18 +274,26 @@ def render_telemetry_ribbon(telem: dict) -> None:
                 help="End-to-end retrieval, reranking, and generation latency.",
             )
         with c2:
+            ttft = telem.get("ttft_ms")
+            ttft_str = f"{ttft:.0f} ms" if ttft and ttft > 0 else "N/A"
+            st.metric(
+                "TTFT",
+                ttft_str,
+                help="Time-to-First-Token generation latency.",
+            )
+        with c3:
             st.metric(
                 "Top-1 Score",
                 f"{telem.get('top_score', 0.0):.4f}",
                 help="Cross-encoder relevance score of top candidate.",
             )
-        with c3:
+        with c4:
             st.metric(
                 "Temporal Boost",
                 f"{telem.get('time_decay', 1.0):.2f}x",
                 help="Exponential recency decay multiplier based on edition date.",
             )
-        with c4:
+        with c5:
             is_refused = telem.get("refused", False)
             st.metric(
                 "Safety Gate",
@@ -638,15 +647,26 @@ if user_query:
                             context=context_str, query=user_query
                         )
 
-                with timer(trace, "llm_total_ms"):
-                    guardrails = prompts.get("guardrails", {})
-                    generation_config = {
-                        "temperature": guardrails.get("temperature", 0.1),
-                        "top_p": guardrails.get("top_p", 0.95),
-                    }
-                    answer_text = safe_generate(
-                        gemini_model, full_prompt, rate_limiter, generation_config=generation_config
+                guardrails = prompts.get("guardrails", {})
+                generation_config = {
+                    "temperature": guardrails.get("temperature", 0.1),
+                    "top_p": guardrails.get("top_p", 0.95),
+                }
+
+                # Real-time token streaming with TTFT tracking
+                stream_wrapper = TimedStreamWrapper(
+                    synthesize_answer(
+                        gemini_model,
+                        full_prompt,
+                        rate_limiter,
+                        generation_config=generation_config,
+                        stream=True,
                     )
+                )
+                raw_stream_out = st.write_stream(stream_wrapper)
+                answer_text = str(raw_stream_out) if isinstance(raw_stream_out, str) else "".join(str(x) for x in raw_stream_out)
+                trace.llm_ttft_ms = stream_wrapper.ttft_ms
+                trace.llm_total_ms = stream_wrapper.completion_ms
 
                 # Citation Verification
                 citations_valid, ungrounded_dates = validate_citations(answer_text, reranked_sorted)
@@ -661,13 +681,12 @@ if user_query:
                 trace.total_ms = (datetime.now(timezone.utc) - overall_start).total_seconds() * 1000
                 telemetry_data = {
                     "total_ms": trace.total_ms,
+                    "ttft_ms": trace.llm_ttft_ms,
                     "top_score": top_score,
                     "time_decay": time_decay,
                     "refused": False,
                 }
                 render_telemetry_ribbon(telemetry_data)
-
-                st.markdown(answer_text)
                 trace.answer_length_chars = len(answer_text)
 
                 # Prepare citations
@@ -696,6 +715,7 @@ if user_query:
                 gate_status="REFUSED" if refused else "PASSED",
                 latency_ms=trace.total_ms,
                 chunks_retrieved_count=len(citations),
+                ttft_ms=trace.llm_ttft_ms,
             )
 
             # Append assistant message
@@ -704,6 +724,7 @@ if user_query:
                 "content": answer_text,
                 "telemetry": {
                     "total_ms": trace.total_ms,
+                    "ttft_ms": trace.llm_ttft_ms,
                     "top_score": top_score,
                     "time_decay": time_decay,
                     "refused": refused,

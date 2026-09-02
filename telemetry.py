@@ -1,6 +1,6 @@
 """
 telemetry.py — SQLite-backed Local Retrieval Audit Trail & Telemetry Logging.
-Provides persistent audit logging for query latency, refusal gating, matching scores, and storage mode.
+Provides persistent audit logging for query latency, TTFT, refusal gating, matching scores, and storage mode.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ def init_telemetry_db(db_path: str = DEFAULT_DB_PATH) -> None:
                     top_score REAL,
                     gate_status TEXT,
                     latency_ms REAL,
-                    chunks_retrieved_count INTEGER
+                    chunks_retrieved_count INTEGER,
+                    ttft_ms REAL DEFAULT 0.0
                 );
                 """
             )
@@ -40,6 +41,11 @@ def init_telemetry_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON query_telemetry (timestamp);
                 """
             )
+            # Ensure ttft_ms column exists for schema evolution
+            try:
+                cursor.execute("ALTER TABLE query_telemetry ADD COLUMN ttft_ms REAL DEFAULT 0.0;")
+            except Exception:
+                pass
             conn.commit()
     except Exception as e:
         logger.warning(f"Failed to initialize telemetry database at {db_path}: {e}")
@@ -52,6 +58,7 @@ def log_query_audit(
     gate_status: str,
     latency_ms: float,
     chunks_retrieved_count: int,
+    ttft_ms: float = 0.0,
     db_path: str = DEFAULT_DB_PATH,
 ) -> None:
     """Safely log a query execution transaction to SQLite audit database."""
@@ -63,8 +70,8 @@ def log_query_audit(
             cursor.execute(
                 """
                 INSERT INTO query_telemetry (
-                    timestamp, query_text, storage_mode, top_score, gate_status, latency_ms, chunks_retrieved_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                    timestamp, query_text, storage_mode, top_score, gate_status, latency_ms, chunks_retrieved_count, ttft_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     utc_now,
@@ -74,6 +81,7 @@ def log_query_audit(
                     gate_status,
                     float(latency_ms),
                     int(chunks_retrieved_count),
+                    float(ttft_ms),
                 ),
             )
             conn.commit()
@@ -95,7 +103,7 @@ def fetch_recent_audit_logs(
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, timestamp, query_text, storage_mode, top_score, gate_status, latency_ms, chunks_retrieved_count
+                SELECT id, timestamp, query_text, storage_mode, top_score, gate_status, latency_ms, ttft_ms, chunks_retrieved_count
                 FROM query_telemetry
                 ORDER BY id DESC
                 LIMIT ?;
@@ -112,7 +120,7 @@ def fetch_recent_audit_logs(
 def get_audit_summary_stats(db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
     """Compute summary metrics from query telemetry."""
     if not Path(db_path).exists():
-        return {"total_queries": 0, "passed": 0, "refused": 0, "avg_latency_ms": 0.0}
+        return {"total_queries": 0, "passed": 0, "refused": 0, "avg_latency_ms": 0.0, "avg_ttft_ms": 0.0}
 
     try:
         with sqlite3.connect(db_path, timeout=5.0) as conn:
@@ -123,7 +131,8 @@ def get_audit_summary_stats(db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                     COUNT(*) as total,
                     SUM(CASE WHEN gate_status = 'PASSED' THEN 1 ELSE 0 END) as passed_cnt,
                     SUM(CASE WHEN gate_status = 'REFUSED' THEN 1 ELSE 0 END) as refused_cnt,
-                    AVG(latency_ms) as avg_latency
+                    AVG(latency_ms) as avg_latency,
+                    AVG(ttft_ms) as avg_ttft
                 FROM query_telemetry;
                 """
             )
@@ -134,8 +143,9 @@ def get_audit_summary_stats(db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                     "passed": row[1] or 0,
                     "refused": row[2] or 0,
                     "avg_latency_ms": round(row[3] or 0.0, 1),
+                    "avg_ttft_ms": round(row[4] or 0.0, 1),
                 }
     except Exception as e:
         logger.warning(f"Failed to compute audit summary stats: {e}")
 
-    return {"total_queries": 0, "passed": 0, "refused": 0, "avg_latency_ms": 0.0}
+    return {"total_queries": 0, "passed": 0, "refused": 0, "avg_latency_ms": 0.0, "avg_ttft_ms": 0.0}

@@ -269,6 +269,9 @@ def set_storage_mode(mode: str) -> None:
     _STORAGE_MODE = mode
 
 
+_LOCAL_CLIENTS: dict[str, Any] = {}
+
+
 def get_qdrant_client(
     url: str | None = None,
     api_key: str | None = None,
@@ -284,15 +287,16 @@ def get_qdrant_client(
     Returns:
         tuple: (client, "CLOUD" | "LOCAL_DISK")
     """
-    global _STORAGE_MODE
+    global _STORAGE_MODE, _LOCAL_CLIENTS
 
     # If no URL or placeholder URL, immediately fall back to local disk
     if not url or "your-cluster" in url or "example" in url:
         logger.info(f"Using local disk-backed Qdrant storage at {local_path}")
         Path(local_path).mkdir(parents=True, exist_ok=True)
-        client = QdrantClient(path=local_path)
+        if local_path not in _LOCAL_CLIENTS:
+            _LOCAL_CLIENTS[local_path] = QdrantClient(path=local_path)
         _STORAGE_MODE = "LOCAL_DISK"
-        return client, _STORAGE_MODE
+        return _LOCAL_CLIENTS[local_path], _STORAGE_MODE
 
     try:
         client = QdrantClient(url=url, api_key=api_key, timeout=timeout)
@@ -305,9 +309,10 @@ def get_qdrant_client(
             f"Qdrant Cloud connection failed ({e}). Falling back to local disk storage at {local_path}."
         )
         Path(local_path).mkdir(parents=True, exist_ok=True)
-        client = QdrantClient(path=local_path)
+        if local_path not in _LOCAL_CLIENTS:
+            _LOCAL_CLIENTS[local_path] = QdrantClient(path=local_path)
         _STORAGE_MODE = "LOCAL_DISK"
-        return client, "LOCAL_DISK"
+        return _LOCAL_CLIENTS[local_path], "LOCAL_DISK"
 
 
 def clear_embedding_cache() -> None:
@@ -569,7 +574,7 @@ def rerank_candidates(
 
 def should_refuse(
     reranked: list[RerankedPassage],
-    config: dict,
+    config: dict | None = None,
 ) -> bool:
     """Determine if the pipeline should emit a refusal instead of calling the LLM.
 
@@ -580,12 +585,15 @@ def should_refuse(
 
     Args:
         reranked: Post-reranking passages (sorted by cross_encoder_score desc).
-        config: refusal_config from prompts.yaml.
+        config: refusal_config from prompts.yaml (optional).
 
     Returns:
         True → emit refusal message, skip LLM call.
         False → proceed with prompt assembly and generation.
     """
+    if config is None:
+        config = {"guardrails": {"refusal_threshold": 0.25, "min_relevant_chunks": 1}}
+
     # Support both v2.0 guardrails and legacy refusal_config
     guardrails = config.get("guardrails", {})
     refusal_config = config.get("refusal_config", {})
@@ -597,11 +605,20 @@ def should_refuse(
         return True
 
     # Condition 2: Top-1 score below threshold
-    if reranked[0].cross_encoder_score < theta:
+    first_score = getattr(reranked[0], "cross_encoder_score", None)
+    if first_score is None and isinstance(reranked[0], dict):
+        first_score = reranked[0].get("cross_encoder_score", reranked[0].get("score", 1.0))
+    if first_score is not None and first_score < theta:
         return True
 
     # Condition 3: Insufficient relevant chunks
-    relevant_count = sum(1 for p in reranked if p.cross_encoder_score >= theta)
+    def _score(p: Any) -> float:
+        s = getattr(p, "cross_encoder_score", None)
+        if s is None and isinstance(p, dict):
+            s = p.get("cross_encoder_score", p.get("score", 1.0))
+        return float(s or 0.0)
+
+    relevant_count = sum(1 for p in reranked if _score(p) >= theta)
     if relevant_count < min_chunks:
         return True
 
@@ -723,6 +740,77 @@ def safe_generate(
                 raise
 
     return "The service is temporarily busy. Please try again in a few moments."
+
+
+class TimedStreamWrapper:
+    """Wraps a token generator to track Time-to-First-Token (TTFT) and completion duration."""
+
+    def __init__(self, generator: Any):
+        self.generator = generator
+        self.start_time = time.monotonic()
+        self.ttft_ms: float = 0.0
+        self.completion_ms: float = 0.0
+        self.first_token_received = False
+        self.collected_chunks: list[str] = []
+
+    def __iter__(self):
+        for chunk in self.generator:
+            if not self.first_token_received and chunk:
+                self.ttft_ms = (time.monotonic() - self.start_time) * 1000
+                self.first_token_received = True
+            self.collected_chunks.append(chunk)
+            yield chunk
+        self.completion_ms = (time.monotonic() - self.start_time) * 1000
+        if not self.first_token_received:
+            self.ttft_ms = self.completion_ms
+
+    @property
+    def full_text(self) -> str:
+        return "".join(self.collected_chunks)
+
+
+def stream_synthesize_answer(
+    model: Any,
+    prompt: str,
+    rate_limiter: GeminiRateLimiter | None = None,
+    generation_config: dict | None = None,
+) -> Any:
+    """Yield token chunks incrementally from Gemini model with rate limiting."""
+    if rate_limiter:
+        rate_limiter.acquire()
+
+    if hasattr(model, "generate_content"):
+        try:
+            if generation_config:
+                response = model.generate_content(prompt, stream=True, generation_config=generation_config)
+            else:
+                response = model.generate_content(prompt, stream=True)
+
+            for chunk in response:
+                chunk_text = getattr(chunk, "text", "")
+                if chunk_text:
+                    yield chunk_text
+        except Exception as e:
+            logger.warning(f"Streaming token yield failed: {e}. Falling back to standard generation.")
+            fallback = safe_generate(model, prompt, rate_limiter or GeminiRateLimiter(14), generation_config)
+            yield fallback
+    else:
+        yield "The service model is temporarily unavailable."
+
+
+def synthesize_answer(
+    model: Any,
+    prompt: str,
+    rate_limiter: GeminiRateLimiter | None = None,
+    generation_config: dict | None = None,
+    stream: bool = True,
+) -> Any:
+    """Unified synthesis function supporting streaming generator and static text output."""
+    if stream:
+        return stream_synthesize_answer(model, prompt, rate_limiter, generation_config)
+    return safe_generate(
+        model, prompt, rate_limiter or GeminiRateLimiter(14), generation_config
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
