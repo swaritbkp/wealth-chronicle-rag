@@ -2,6 +2,7 @@
 ingest.py — Admin Ingestion Plane for WealthChronicle AI v1.0
 Covers TASK-3.1 through TASK-3.7
 Upgraded with watermark sanitization and table-aware chunking for Economic Times Wealth.
+Migrated to Qdrant native sparse vectors (BM42) for hybrid search.
 """
 
 from __future__ import annotations
@@ -15,14 +16,16 @@ from datetime import datetime
 from pathlib import Path
 
 import pymupdf4llm
-from fastembed import TextEmbedding
+from fastembed import SparseTextEmbedding, TextEmbedding
 from qdrant_client import QdrantClient
+from qdrant_client import models
 from qdrant_client.models import (
     Distance,
     HnswConfigDiff,
-    OptimizersConfigDiff,
     PayloadSchemaType,
     PointStruct,
+    SparseVector,
+    SparseVectorParams,
     VectorParams,
 )
 
@@ -704,33 +707,33 @@ def extract_edition_date_from_text(text: str) -> str | None:
 
 
 def init_collection(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
-    """Initialize Qdrant collection with HNSW config.
+    """Initialize Qdrant collection with named vectors for hybrid search.
 
     Creates collection if it does not exist, with:
-        - VectorParams(size=384, distance=Distance.COSINE)
-        - HnswConfigDiff(m=16, ef_construct=128, full_scan_threshold=10_000)
-        - OptimizersConfigDiff(indexing_threshold=20_000, memmap_threshold=50_000)
+        - Dense vector: "dense" (384-dim, COSINE) with HNSW m=16, ef_construct=128
+        - Sparse vector: "sparse" (BM42/SPLADE) with on-disk index
+        - HNSW config: m=16, ef_construct=128, full_scan_threshold=10_000
+        - Optimizers: indexing_threshold=20_000, memmap_threshold=50_000
     """
     if client.collection_exists(collection_name):
         return
 
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=384,
-            distance=Distance.COSINE,
-        ),
-        hnsw_config=HnswConfigDiff(
-            m=16,
-            ef_construct=128,
-            full_scan_threshold=10_000,
-        ),
-        optimizers_config=OptimizersConfigDiff(
-            indexing_threshold=20_000,
-            memmap_threshold=50_000,
-        ),
+        vectors_config={
+            "dense": VectorParams(
+                size=384,
+                distance=Distance.COSINE,
+                hnsw_config=HnswConfigDiff(m=16, ef_construct=128),
+            )
+        },
+        sparse_vectors_config={
+            "sparse": SparseVectorParams(
+                index=models.SparseIndexParams(on_disk=False)
+            )
+        },
     )
-    print(f"[OK] Created collection: {collection_name}")
+    print(f"[OK] Created collection: {collection_name} with dense + sparse vectors")
 
 
 def ensure_payload_indexes(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
@@ -770,11 +773,11 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         3. Call validate_extraction(pages, pdf_path)
         4. For each page: call sliding_window_chunk(text) (table-aware)
         5. Convert 0-indexed to 1-indexed page numbers.
-        6. Generate chunk_id and point_id for each chunk.
-        7. Construct ChunkPayload Pydantic objects
-        8. Embed all texts using TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        9. Build PointStruct list with vector + payload dict
-        10. Call client.upsert with @with_qdrant_retry
+        5. Generate chunk_id and point_id for each chunk.
+        6. Construct ChunkPayload Pydantic objects
+        7. Embed all texts using TextEmbedding (dense) and SparseTextEmbedding (sparse)
+        8. Build PointStruct list with named vectors (dense + sparse) + payload dict
+        9. Call client.upsert with @with_qdrant_retry
 
     Args:
         pdf_path: Path to PDF file
@@ -902,18 +905,40 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
 
     print(f"[*] Generating embeddings for {len(all_texts)} chunks...")
 
-    # 7. Embed
-    embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    embeddings = list(embedding_model.embed(all_texts))
+    # 7. Generate both dense and sparse embeddings
+    print("[*] Generating dense embeddings (BAAI/bge-small-en-v1.5)...")
+    dense_embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    dense_embeddings = list(dense_embedding_model.embed(all_texts))
 
-    # 8. Build PointStruct
+    print("[*] Generating sparse embeddings (Qdrant/bm42-all-minilm-l6-v2-attentions)...")
+    sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
+    sparse_embeddings = list(sparse_embedding_model.embed(all_texts))
+
+    # 8. Build PointStruct with named vectors (dense + sparse)
     points: list[PointStruct] = []
-    for point_id, payload, emb in zip(all_point_ids, all_payloads, embeddings):
-        vector = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+    for point_id, payload, dense_emb, sparse_emb in zip(all_point_ids, all_payloads, dense_embeddings, sparse_embeddings):
+        dense_vector = dense_emb.tolist() if hasattr(dense_emb, "tolist") else list(dense_emb)
+        
+        # Convert sparse embedding to Qdrant SparseVector format
+        if hasattr(sparse_emb, "indices") and hasattr(sparse_emb, "values"):
+            sparse_vector = SparseVector(
+                indices=sparse_emb.indices.tolist() if hasattr(sparse_emb.indices, "tolist") else list(sparse_emb.indices),
+                values=sparse_emb.values.tolist() if hasattr(sparse_emb.values, "tolist") else list(sparse_emb.values),
+            )
+        else:
+            # Handle dict-like sparse embedding output
+            sparse_vector = SparseVector(
+                indices=list(sparse_emb.get("indices", [])),
+                values=list(sparse_emb.get("values", [])),
+            )
+        
         points.append(
             PointStruct(
                 id=point_id,
-                vector=vector,
+                vector={
+                    "dense": dense_vector,
+                    "sparse": sparse_vector,
+                },
                 payload=payload.model_dump(mode="json"),
             )
         )

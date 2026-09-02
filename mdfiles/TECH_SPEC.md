@@ -64,26 +64,22 @@ sequenceDiagram
     participant ST as Streamlit Cloud (app.py)
     participant FE as FastEmbed ONNX (CPU)
     participant QD as Qdrant Cloud
-    participant BM25 as In-Memory BM25 Index
-    participant RRF as RRF + Recency Engine
     participant FR as FlashRank TinyBERT (CPU)
     participant Gemini as Gemini 2.5 Flash API
 
     User->>ST: Submit query string
-    ST->>FE: embed([query]) → 384-dim vector
-    FE-->>ST: query_vector (latency: ~20ms)
+    ST->>FE: embed([query]) → 384-dim dense + sparse vectors
+    FE-->>ST: dense_vector + sparse_vector (latency: ~20ms)
 
     par Dense Retrieval
-        ST->>QD: search(query_vector, limit=12)
+        ST->>QD: prefetch(dense_vector, using="dense", limit=12)
         QD-->>ST: dense_hits[0..11] with scores
     and Sparse Retrieval
-        ST->>BM25: score(query_tokens, corpus)
-        BM25-->>ST: sparse_hits[0..11] with BM25 scores
+        ST->>QD: prefetch(sparse_vector, using="sparse", limit=12)
+        QD-->>ST: sparse_hits[0..11] with scores
     end
 
-    ST->>RRF: fuse(dense_hits, sparse_hits, k=60, α=0.35, τ=365)
-    RRF-->>ST: fused_candidates[0..19] (deduplicated, time-decayed)
-
+    ST->>ST: RRF fusion (k=60) + Recency Decay (α=0.35, τ=365)
     ST->>FR: rerank(query, fused_candidates[:20])
     FR-->>ST: reranked[0..19] with cross-encoder scores
 
@@ -104,19 +100,19 @@ sequenceDiagram
 
 | Stage | Component | Operation | P50 (ms) | P95 (ms) | Bound |
 |-------|-----------|-----------|----------|----------|-------|
-| T₁ | FastEmbed ONNX | Query vectorization (384-dim) | 12 | 22 | CPU |
-| T₂ | Qdrant Cloud HNSW | Dense k-NN search (k=12) | 35 | 80 | Network + HNSW |
-| T₃ | bm25s (in-memory) | Sparse BM25 scoring | 3 | 8 | CPU + RAM |
+| T₁ | FastEmbed ONNX | Query vectorization (384-dim dense + sparse) | 20 | 35 | CPU |
+| T₂ | Qdrant Cloud HNSW | Dense prefetch (k=12) | 35 | 80 | Network + HNSW |
+| T₃ | Qdrant Cloud Sparse | Sparse prefetch (k=12) | 5 | 15 | Network + HNSW |
 | T₄ | RRF + Recency | Score fusion + sort | <1 | <1 | CPU |
 | T₅ | FlashRank TinyBERT | Cross-encoder rerank (20 pairs) | 45 | 85 | CPU |
 | T₆ | Prompt assembly | String formatting + YAML load | <1 | <1 | CPU |
 | T₇ | Gemini 2.5 Flash | TTFT (streaming first token) | 350 | 800 | Network + GPU |
 | T₈ | Gemini 2.5 Flash | Full generation (~300 tokens) | 600 | 1,100 | Network + GPU |
 | T₉ | Streamlit render | Markdown + expander widget | 5 | 15 | Browser |
-| | | **Total** | **~1,051** | **~2,111** | **✓ ≤ 2,200** |
+| | | **Total** | **~1,061** | **~2,131** | **✓ ≤ 2,200** |
 
 > [!IMPORTANT]
-> The latency budget has ~89 ms of headroom at P95. If Qdrant Cloud latency degrades beyond 80 ms (e.g., during free-tier throttling), the system may breach the 2.2 s SLO. Mitigation: local vector cache for hot queries (see §7.3).
+> The latency budget has ~69 ms of headroom at P95. Sparse vector search adds ~5-15ms vs in-memory BM25 but eliminates cold-boot corpus download and memory overhead.
 
 ---
 
@@ -130,15 +126,28 @@ sequenceDiagram
 from qdrant_client.models import (
     VectorParams, Distance, HnswConfigDiff,
     OptimizersConfigDiff, PayloadSchemaType,
+    SparseVectorParams, SparseIndexParams,
 )
 
 COLLECTION_CONFIG = {
     "collection_name": "wealth_archive",
-    "vectors_config": VectorParams(
-        size=384,                          # BAAI/bge-small-en-v1.5 output dim
-        distance=Distance.COSINE,          # Normalized similarity ∈ [0, 1]
-        on_disk=False,                     # Keep in RAM (free tier: 1GB)
-    ),
+    "vectors_config": {
+        "dense": VectorParams(
+            size=384,                          # BAAI/bge-small-en-v1.5 output dim
+            distance=Distance.COSINE,          # Normalized similarity ∈ [0, 1]
+            on_disk=False,                     # Keep in RAM (free tier: 1GB)
+            hnsw_config=HnswConfigDiff(
+                m=16,                          # Bidirectional links per node
+                ef_construct=128,              # Construction-time beam width
+                full_scan_threshold=10_000,    # Switch to brute-force below this
+            ),
+        },
+    },
+    "sparse_vectors_config": {
+        "sparse": SparseVectorParams(
+            index=SparseIndexParams(on_disk=False),  # In-memory sparse index
+        ),
+    },
     "hnsw_config": HnswConfigDiff(
         m=16,                              # Bidirectional links per node
         ef_construct=128,                  # Construction-time beam width

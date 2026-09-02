@@ -1,6 +1,7 @@
 """
 app.py — Public Streamlit application for WealthChronicle AI v1.0
 Covers TASK-4.1 through TASK-4.5
+Uses Qdrant native hybrid search (BM42 sparse + dense vectors).
 """
 
 import logging
@@ -12,24 +13,22 @@ from datetime import date, datetime, timezone
 
 import google.generativeai as genai
 import streamlit as st
-from fastembed import TextEmbedding
+from fastembed import SparseTextEmbedding, TextEmbedding
 from qdrant_client import QdrantClient
 
 from engine import (
-    BM25Index,
     GeminiRateLimiter,
     QueryTrace,
     check_memory_usage,
+    hybrid_search,
     load_and_validate_prompts,
-    reciprocal_rank_fusion,
     rerank_candidates,
     safe_generate,
     should_refuse,
     timer,
     validate_citations,
-    with_qdrant_retry,
 )
-from schemas import ChunkPayload, RerankedPassage, RetrievalSource, SearchResult
+from schemas import ChunkPayload, RerankedPassage
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Config
@@ -41,17 +40,6 @@ logger = logging.getLogger("wealthchronicle.trace")
 logging.basicConfig(level=logging.INFO)
 
 
-@with_qdrant_retry
-def _dense_search(
-    client: QdrantClient, vector: list[float], collection: str = "wealth_archive", limit: int = 12
-):
-    """Module-level dense search helper with retry (extracted from per-query closure)."""
-    # Compatibility: Qdrant 1.19 prefers query_points, fallback to search
-    if hasattr(client, "query_points"):
-        resp = client.query_points(collection_name=collection, query=vector, limit=limit, with_payload=True)
-        return resp.points if hasattr(resp, "points") else resp
-    return client.search(collection_name=collection, query_vector=vector, limit=limit)  # type: ignore[attr-defined]
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TASK-4.1: Service Initialization & Cache Setup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,7 +50,7 @@ def init_services():
     """Initialize all services with caching.
 
     Returns:
-        tuple: (gemini_model, qdrant_client, embedding_model, ranker, prompts, bm25_index, rate_limiter, ranker_available)
+        tuple: (gemini_model, qdrant_client, dense_embedding_model, sparse_embedding_model, ranker, prompts, rate_limiter, ranker_available)
     """
     # Load and validate prompts
     prompts = load_and_validate_prompts("config/prompts.yaml")
@@ -77,8 +65,11 @@ def init_services():
         api_key=st.secrets["QDRANT_READ_KEY"],
     )
 
-    # FastEmbed
-    embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    # FastEmbed - Dense
+    dense_embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+
+    # FastEmbed - Sparse (BM42)
+    sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
 
     # FlashRank with fallback
     ranker = None
@@ -96,60 +87,13 @@ def init_services():
     # Rate limiter
     rate_limiter = GeminiRateLimiter(max_rpm=14)
 
-    # BM25 index: scroll all documents from Qdrant
-    bm25_index = None
-    try:
-        # Use scroll to fetch all points (payload only)
-        all_texts: list[str] = []
-        all_ids: list[str] = []
-        offset = None
-        while True:
-            points, offset = qdrant_client.scroll(
-                collection_name="wealth_archive",
-                limit=100,
-                offset=offset,
-                with_payload=True,
-                with_vectors=False,
-            )
-            if not points:
-                break
-            for p in points:
-                try:
-                    # Validate payload via ChunkPayload if possible
-                    payload = p.payload
-                    if payload and "text" in payload:
-                        all_texts.append(payload["text"])
-                        all_ids.append(str(p.id))
-                except Exception:
-                    continue
-            if offset is None:
-                break
-
-        if all_texts:
-            bm25_index = BM25Index(corpus_texts=all_texts, corpus_ids=all_ids)
-            logging.info(f"BM25 index built with {len(all_texts)} documents")
-        else:
-            # Empty corpus: create index with dummy data to avoid crash
-            bm25_index = BM25Index(
-                corpus_texts=["dummy placeholder text for initialization"],
-                corpus_ids=["dummy_id"],
-            )
-            logging.warning("BM25 index built with dummy data (empty corpus)")
-    except Exception as e:
-        logging.warning(f"BM25 index build failed: {e}")
-        # Fallback dummy index
-        try:
-            bm25_index = BM25Index(corpus_texts=["dummy placeholder"], corpus_ids=["dummy_id"])
-        except Exception:
-            bm25_index = None
-
     return (
         gemini_model,
         qdrant_client,
-        embedding_model,
+        dense_embedding_model,
+        sparse_embedding_model,
         ranker,
         prompts,
-        bm25_index,
         rate_limiter,
         ranker_available,
     )
@@ -163,10 +107,10 @@ try:
     (
         gemini_model,
         qdrant_client,
-        embedding_model,
+        dense_embedding_model,
+        sparse_embedding_model,
         ranker,
         prompts,
-        bm25_index,
         rate_limiter,
         ranker_available,
     ) = init_services()
@@ -237,90 +181,39 @@ if user_query:
             overall_start = datetime.now(timezone.utc)
 
             try:
-                # ─── TASK-4.2: Hybrid Retrieval Orchestrator ───
-                # 1. Embed query
-                with timer(trace, "embedding_ms"):
-                    q_vector = list(embedding_model.embed([user_query]))[0].tolist()
-
-                # 2. Dense retrieval
-                dense_results: list[SearchResult] = []
-                with timer(trace, "dense_retrieval_ms"):
-                    try:
-                        hits = _dense_search(qdrant_client, q_vector, "wealth_archive", 12)
-                    except Exception as e:
-                        logging.error(f"Dense retrieval failed: {e}")
-                        hits = []
-
-                    trace.dense_candidates = len(hits)
-                    # Build SearchResult objects and payload map
-                    dense_results = []
-                    all_payloads: dict[str, ChunkPayload] = {}
-                    for rank, h in enumerate(hits):
-                        try:
-                            payload = ChunkPayload(**h.payload)
-                            all_payloads[str(h.id)] = payload
-                            dense_results.append(
-                                SearchResult(
-                                    point_id=str(h.id),
-                                    text=h.payload.get("text", ""),
-                                    payload=payload,
-                                    score=(float(h.score) if hasattr(h, "score") else 0.0),
-                                    source=RetrievalSource.DENSE,
-                                    dense_rank=rank + 1,
-                                )
-                            )
-                        except Exception as e:
-                            logging.warning(f"Skipping invalid payload for {h.id}: {e}")
-                            continue
-
-                # 3. Sparse retrieval
-                sparse_results: list[tuple[str, float]] = []
-                with timer(trace, "sparse_retrieval_ms"):
-                    try:
-                        if bm25_index is not None:
-                            sparse_results = bm25_index.search(user_query, limit=12)
-                            trace.sparse_candidates = len(sparse_results)
-                            # Ensure BM25 payloads are in all_payloads
-                            # Need to fetch payloads for sparse-only IDs that weren't in dense
-                            sparse_only_ids = [pid for pid, _ in sparse_results if pid not in all_payloads]
-                            if sparse_only_ids:
-                                try:
-                                    # Retrieve sparse-only payloads via Retrieve
-                                    retrieved = qdrant_client.retrieve(
-                                        collection_name="wealth_archive",
-                                        ids=sparse_only_ids,
-                                        with_payload=True,
-                                    )
-                                    for p in retrieved:
-                                        try:
-                                            payload = ChunkPayload(**p.payload)
-                                            all_payloads[str(p.id)] = payload
-                                        except Exception:
-                                            continue
-                                except Exception as e:
-                                    logging.warning(f"Failed to fetch sparse payloads: {e}")
-                        else:
-                            trace.sparse_candidates = 0
-                    except Exception as e:
-                        logging.warning(f"Sparse retrieval failed: {e}")
-                        sparse_results = []
-                        trace.sparse_candidates = 0
-
-                # 4. Fuse via RRF
-                with timer(trace, "rrf_fusion_ms"):
-                    fused_candidates = reciprocal_rank_fusion(
-                        dense_results=dense_results,
-                        sparse_results=sparse_results,
-                        all_payloads=all_payloads,
-                        reference_date=date.today(),  # P0-2: Explicit reference date for deterministic testing
-                        top_n=20,
+                # ─── TASK-4.2: Hybrid Retrieval Orchestrator (Qdrant Native) ───
+                # 1. Hybrid search (dense + sparse via Qdrant native)
+                with timer(trace, "hybrid_search_ms"):
+                    fused_candidates = hybrid_search(
+                        client=qdrant_client,
+                        query=user_query,
+                        dense_embedding_model=dense_embedding_model,
+                        sparse_embedding_model=sparse_embedding_model,
+                        collection_name="wealth_archive",
+                        limit=12,
+                        reference_date=date.today(),
                     )
                     trace.fused_candidates = len(fused_candidates)
 
-                # 5. Rerank
+                # 2. Rerank
                 with timer(trace, "reranking_ms"):
                     # Build payload_map for reranker (only those in fused)
-                    payload_map = {pid: all_payloads[pid] for pid in [c["point_id"] for c in fused_candidates] if pid in all_payloads}
+                    # We need to fetch payloads for the fused candidates
+                    fused_ids = [c["point_id"] for c in fused_candidates]
+                    payload_map = {}
+                    if fused_ids:
+                        retrieved = qdrant_client.retrieve(
+                            collection_name="wealth_archive",
+                            ids=fused_ids,
+                            with_payload=True,
+                        )
+                        for p in retrieved:
+                            try:
+                                payload = ChunkPayload(**p.payload)
+                                payload_map[str(p.id)] = payload
+                            except Exception:
+                                continue
+
                     reranked: list[RerankedPassage] = rerank_candidates(
                         query=user_query,
                         candidates=fused_candidates,
@@ -331,7 +224,7 @@ if user_query:
                     trace.reranked_top_k = len(reranked)
                     trace.top1_cross_encoder_score = reranked[0].cross_encoder_score if reranked else 0.0
 
-                # 6. Refusal check
+                # 3. Refusal check
                 refused = should_refuse(reranked, prompts)
                 trace.refused = refused
 

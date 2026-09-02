@@ -87,6 +87,7 @@ class SearchResult(BaseModel):
     source: RetrievalSource
     dense_rank: int | None = Field(default=None, ge=1)
     sparse_rank: int | None = Field(default=None, ge=1)
+    vector_name: str | None = Field(default=None, description="Name of vector used for retrieval (dense/sparse)")
 
 
 class RerankedPassage(BaseModel):

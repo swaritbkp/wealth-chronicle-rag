@@ -18,7 +18,6 @@ from datetime import date
 from functools import wraps
 from pathlib import Path
 
-import bm25s
 import psutil
 import yaml
 
@@ -112,38 +111,15 @@ def load_and_validate_prompts(config_path: str = "config/prompts.yaml") -> dict:
 
     return config
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# TASK-2.1: BM25 Index Builder
+# TASK-2.2: Reciprocal Rank Fusion (RRF) + Exponential Recency Decay (Legacy)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This function is kept for backward compatibility with tests.
+# Production code uses hybrid_search() which uses Qdrant native sparse+dense.
+#
 # ─────────────────────────────────────────────────────────────────────────────
 
-
-class BM25Index:
-    """In-memory BM25 index over the full corpus text.
-
-    Lifecycle:
-        - Built once at Streamlit startup via @st.cache_resource.
-        - Corpus texts are fetched from Qdrant via scroll() on boot.
-        - RAM cost: ~2 bytes/token × 3M tokens ≈ 6 MB (well within budget).
-    """
-
-    def __init__(self, corpus_texts: list[str], corpus_ids: list[str]):
-        self.corpus_ids = corpus_ids
-        tokenized = bm25s.tokenize(corpus_texts, stopwords="en")
-        self.model = bm25s.BM25()
-        self.model.index(tokenized)
-        self._corpus_tokens = tokenized
-
-    def search(self, query: str, limit: int = 12) -> list[tuple[str, float]]:
-        """Return (point_id, bm25_score) tuples, descending by score."""
-        query_tokens = bm25s.tokenize([query], stopwords="en")
-        results, scores = self.model.retrieve(query_tokens, k=limit, corpus=self.corpus_ids)
-        return [(str(doc_id), float(score)) for doc_id, score in zip(results[0], scores[0]) if score > 0]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TASK-2.2: Reciprocal Rank Fusion (RRF) + Exponential Recency Decay
-# ─────────────────────────────────────────────────────────────────────────────
 
 RRF_K: int = 60
 RECENCY_ALPHA: float = 0.35
@@ -157,7 +133,7 @@ def reciprocal_rank_fusion(
     reference_date: date | None = None,
     top_n: int = 20,
 ) -> list[dict]:
-    """Fuse dense and sparse retrieval results with temporal recency weighting.
+    """Fuse dense and sparse retrieval results with temporal recency weighting (legacy).
 
     Args:
         dense_results: Ranked dense retrieval results.
@@ -211,6 +187,22 @@ def reciprocal_rank_fusion(
 
     fused.sort(key=lambda x: x["final_score"], reverse=True)
     return fused[:top_n]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASK-2.1: Qdrant Native Hybrid Search (BM42 Sparse + Dense)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Replaces in-memory BM25Index with Qdrant native sparse vector search.
+# Uses prefetch for dense + sparse retrieval, then RRF fusion client-side.
+# Eliminates in-memory BM25 index and cold-boot corpus download.
+#
+# Search Parameters:
+#   - Dense: HNSW ef=64, limit=12, with_payload=True
+#   - Sparse: limit=12, with_payload=True
+#   - RRF fusion: k=60, with exponential recency decay (alpha=0.35, tau=365)
+#
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ─────────────────────────────────────────────────────────────────────────────
