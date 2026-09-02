@@ -706,44 +706,15 @@ def extract_edition_date_from_text(text: str) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def init_collection(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
-    """Initialize Qdrant collection with named vectors for hybrid search.
-
-    Creates collection if it does not exist, with:
-        - Dense vector: "dense" (384-dim, COSINE) with HNSW m=16, ef_construct=128
-        - Sparse vector: "sparse" (BM42/SPLADE) with on-disk index
-        - HNSW config: m=16, ef_construct=128, full_scan_threshold=10_000
-        - Optimizers: indexing_threshold=20_000, memmap_threshold=50_000
-    """
-    if client.collection_exists(collection_name):
-        return
-
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config={
-            "dense": VectorParams(
-                size=384,
-                distance=Distance.COSINE,
-                hnsw_config=HnswConfigDiff(m=16, ef_construct=128),
-            )
-        },
-        sparse_vectors_config={
-            "sparse": SparseVectorParams(
-                index=models.SparseIndexParams(on_disk=False)
-            )
-        },
-    )
-    print(f"[OK] Created collection: {collection_name} with dense + sparse vectors")
-
-
 def ensure_payload_indexes(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
     """Create payload indexes for filtering and sorting.
 
     Creates keyword index on edition_date, integer index on page_number,
-    and keyword index on source. All calls are idempotent.
+    boolean index on has_table, and keyword index on source. All calls are idempotent.
     """
     indexes = [
         {"field_name": "edition_date", "field_schema": PayloadSchemaType.KEYWORD},
+        {"field_name": "has_table", "field_schema": PayloadSchemaType.BOOL},
         {"field_name": "page_number", "field_schema": PayloadSchemaType.INTEGER},
         {"field_name": "source", "field_schema": PayloadSchemaType.KEYWORD},
     ]
@@ -757,6 +728,46 @@ def ensure_payload_indexes(client: QdrantClient, collection_name: str = COLLECTI
         except Exception:
             # Idempotent: index already exists
             pass
+
+
+def ensure_collection_exists(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
+    """Initialize Qdrant collection with named vectors for hybrid search and ensure payload indexes.
+
+    Creates collection if it does not exist, with:
+        - Dense vector: "dense" (384-dim, COSINE) with HNSW m=16, ef_construct=128
+        - Sparse vector: "sparse" (BM42/SPLADE) with on-disk index
+        - HNSW config: m=16, ef_construct=128, full_scan_threshold=10_000
+        - Optimizers: indexing_threshold=20_000, memmap_threshold=50_000
+    Verifies and creates payload indexes:
+        - edition_date: KEYWORD
+        - has_table: BOOL
+        - page_number: INTEGER
+        - source: KEYWORD
+    """
+    if not client.collection_exists(collection_name):
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                "dense": VectorParams(
+                    size=384,
+                    distance=Distance.COSINE,
+                    hnsw_config=HnswConfigDiff(m=16, ef_construct=128),
+                )
+            },
+            sparse_vectors_config={
+                "sparse": SparseVectorParams(
+                    index=models.SparseIndexParams(on_disk=False)
+                )
+            },
+        )
+        print(f"[OK] Created collection: {collection_name} with dense + sparse vectors")
+
+    ensure_payload_indexes(client, collection_name)
+
+
+def init_collection(client: QdrantClient, collection_name: str = COLLECTION_NAME) -> None:
+    """Backward-compatible alias for ensure_collection_exists."""
+    ensure_collection_exists(client, collection_name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -885,12 +896,15 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
             if article_title is None:
                 article_title = f"Page {page_number}"
 
+            has_table = ("|" in chunk_text) and _has_table_data_rows(chunk_text)
+
             payload = ChunkPayload(
                 chunk_id=chunk_id,
                 edition_date=edition_date,
                 page_number=page_number,
                 article_title=article_title,
                 text=chunk_text,
+                has_table=has_table,
                 char_count=char_count,
                 word_count=word_count,
             )
@@ -908,11 +922,11 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
     # 7. Generate both dense and sparse embeddings
     print("[*] Generating dense embeddings (BAAI/bge-small-en-v1.5)...")
     dense_embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    dense_embeddings = list(dense_embedding_model.embed(all_texts))
+    dense_embeddings = list(dense_embedding_model.embed(all_texts, batch_size=32))
 
     print("[*] Generating sparse embeddings (Qdrant/bm42-all-minilm-l6-v2-attentions)...")
     sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
-    sparse_embeddings = list(sparse_embedding_model.embed(all_texts))
+    sparse_embeddings = list(sparse_embedding_model.embed(all_texts, batch_size=32))
 
     # 8. Build PointStruct with named vectors (dense + sparse)
     points: list[PointStruct] = []
@@ -944,8 +958,7 @@ def ingest_pdf(pdf_path: str, edition_date: str | None = None, client: QdrantCli
         )
 
     # 9. Ensure collection and indexes, then upsert
-    init_collection(client)
-    ensure_payload_indexes(client)
+    ensure_collection_exists(client)
 
     # P0-4: Point collision & integrity guard
     for point_id, payload in zip(all_point_ids, all_payloads):

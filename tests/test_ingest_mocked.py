@@ -5,13 +5,21 @@ from __future__ import annotations
 import hashlib
 import re
 
+from unittest.mock import MagicMock
+
+from qdrant_client.models import PayloadSchemaType
+
 from ingest import (
     clean_extracted_text,
+    ensure_collection_exists,
+    ensure_payload_indexes,
     extract_edition_date_from_text,
     generate_chunk_id,
     generate_point_id,
+    init_collection,
     sliding_window_chunk,
 )
+from schemas import ChunkPayload
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chunker Edge Cases
@@ -481,3 +489,82 @@ class TestPointCollisionGuard:
             assert pid not in seen, f"Collision at i={i} pid={pid}"
             seen.add(pid)
         assert len(seen) == 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Payload Index Creation & ChunkPayload Table Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPayloadIndexCreation:
+    def test_ensure_collection_exists_creates_when_missing(self) -> None:
+        client = MagicMock()
+        client.collection_exists.return_value = False
+
+        ensure_collection_exists(client, "test_collection")
+
+        client.create_collection.assert_called_once()
+        assert client.create_payload_index.call_count == 4
+
+        # Check payload index calls
+        created_indexes = {
+            call.kwargs["field_name"]: call.kwargs["field_schema"]
+            for call in client.create_payload_index.call_args_list
+        }
+        assert created_indexes["edition_date"] == PayloadSchemaType.KEYWORD
+        assert created_indexes["has_table"] == PayloadSchemaType.BOOL
+        assert created_indexes["page_number"] == PayloadSchemaType.INTEGER
+        assert created_indexes["source"] == PayloadSchemaType.KEYWORD
+
+    def test_ensure_collection_exists_skips_create_if_exists(self) -> None:
+        client = MagicMock()
+        client.collection_exists.return_value = True
+
+        ensure_collection_exists(client, "test_collection")
+
+        client.create_collection.assert_not_called()
+        assert client.create_payload_index.call_count == 4
+
+    def test_ensure_payload_indexes_handles_exceptions_idempotently(self) -> None:
+        client = MagicMock()
+        client.create_payload_index.side_effect = Exception("Index already exists")
+
+        # Should not raise exception
+        ensure_payload_indexes(client, "test_collection")
+        assert client.create_payload_index.call_count == 4
+
+    def test_init_collection_alias_calls_ensure_collection_exists(self) -> None:
+        client = MagicMock()
+        client.collection_exists.return_value = True
+
+        init_collection(client, "test_collection")
+        assert client.create_payload_index.call_count == 4
+
+
+class TestChunkPayloadWithTable:
+    def test_chunk_payload_default_has_table_false(self) -> None:
+        payload = ChunkPayload(
+            chunk_id="chk_2026_08_24_p1_000",
+            edition_date="2026-08-24",
+            page_number=1,
+            text="Valid financial article text content for testing purposes here with enough characters." * 2,
+            char_count=180,
+            word_count=24,
+        )
+        assert payload.has_table is False
+
+    def test_chunk_payload_explicit_has_table_true(self) -> None:
+        table_text = "| Fund | 1Y Return |\n|---|---|\n| Index | 14.5% |\n| Active | 16.2% |\n" + "Extra financial text here to ensure chunk length exceeds minimum requirements." * 2
+        payload = ChunkPayload(
+            chunk_id="chk_2026_08_24_p1_000",
+            edition_date="2026-08-24",
+            page_number=1,
+            text=table_text,
+            has_table=True,
+            char_count=len(table_text),
+            word_count=len(table_text.split()),
+        )
+        assert payload.has_table is True
+        dumped = payload.model_dump(mode="json")
+        assert dumped["has_table"] is True
+

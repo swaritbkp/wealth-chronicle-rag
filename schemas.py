@@ -41,6 +41,10 @@ class ChunkPayload(BaseModel):
         max_length=8000,
         description="Chunk text content after noise filtering",
     )
+    has_table: bool = Field(
+        default=False,
+        description="True if chunk contains tabular data",
+    )
     source: str = Field(
         default="Weekly Financial Dossier",
         description="Publication brand name (constant for single-source MVP)",
