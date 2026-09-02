@@ -1,0 +1,57 @@
+name: CI Quality & Verification Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: Lint, Type Check & Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff mypy
+
+      - name: Step 4 - Run Ruff Linter
+        run: |
+          ruff check .
+
+      - name: Step 5 - Run MyPy Static Type Check
+        run: |
+          mypy schemas.py engine.py ingest.py app.py admin_ingest_app.py telemetry.py eval_runner.py --ignore-missing-imports
+
+      - name: Step 6 - Run Pytest Suite (148 Tests)
+        run: |
+          pytest tests/ -v
+
+      - name: Step 7 - Run IR Benchmark Evaluation Runner
+        run: |
+          python eval_runner.py --eval-set tests/golden_eval_set_2026.json --output-json eval_metrics.json
+
+      - name: Upload Evaluation Metrics Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-benchmark-metrics
+          path: eval_metrics.json
+          retention-days: 14
