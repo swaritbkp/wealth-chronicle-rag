@@ -22,19 +22,18 @@ from qdrant_client import models
 from engine import (
     GeminiRateLimiter,
     QueryTrace,
-    build_structured_generation_prompt,
     check_memory_usage,
-    extract_citation_spans,
+    extract_citation_spans_from_text,
     get_qdrant_client,
     get_storage_mode,
     hybrid_search,
     load_and_validate_prompts,
     rerank_candidates,
     should_refuse,
-    synthesize_structured_answer,
+    synthesize_with_streaming_and_validation,
     timer,
 )
-from schemas import ChunkPayload, RerankedPassage, GroundedAnswer
+from schemas import ChunkPayload, CitationMetadata, RerankedPassage
 from telemetry import log_query_audit
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -625,40 +624,59 @@ if user_query:
                 trace.answer_length_chars = len(answer_text)
                 trace.citation_count = 0
             else:
-                # ─── STRUCTURED GENERATION WITH GEMINI JSON MODE ───
+                # ─── STREAMING GENERATION WITH LIVE TTFT + POST-STREAM VALIDATION ───
                 with timer(trace, "prompt_assembly_ms"):
                     reranked_sorted = sorted(reranked, key=lambda x: x.payload.edition_date, reverse=True)
-                    # Build structured prompt with passage identifiers for citation grounding
-                    full_prompt = build_structured_generation_prompt(
-                        context_passages=reranked_sorted,
-                        query=user_query,
-                        system_prompt=prompts["system_prompt"],
+                    # Build streaming prompt (simpler, no JSON constraints)
+                    context_passages_str = "\n\n---\n\n".join(
+                        [
+                            f"[Passage {i} | Edition: {p.payload.edition_date} | Page: {p.payload.page_number} | Section: {p.payload.article_title or 'Untitled'}]\n{p.text}"
+                            for i, p in enumerate(reranked_sorted, start=1)
+                        ]
+                    )
+                    full_prompt = f"{prompts['system_prompt']}\n\n" + prompts["rag_synthesis_template"].format(
+                        context_passages=context_passages_str, query=user_query
+                    ) if "rag_synthesis_template" in prompts else f"{prompts['system_prompt']}\n\n" + prompts["rag_prompt_template"].format(
+                        context=context_passages_str, query=user_query
                     )
 
                 guardrails = prompts.get("guardrails", {})
                 generation_config = {
-                    "response_mime_type": "application/json",
                     "temperature": guardrails.get("temperature", 0.1),
                     "top_p": guardrails.get("top_p", 0.95),
                     "top_k": 40,
                     "candidate_count": 1,
                 }
 
-                # Structured generation with Pydantic validation
-                structured_answer: GroundedAnswer = synthesize_structured_answer(
-                    gemini_model,
-                    full_prompt,
-                    rate_limiter,
+                # Stream tokens live with TTFT tracking, then validate citations
+                stream_gen = synthesize_with_streaming_and_validation(
+                    model=gemini_model,
+                    prompt=full_prompt,
+                    rate_limiter=rate_limiter,
                     generation_config=generation_config,
+                    context_passages=reranked_sorted,
+                    system_prompt=prompts["system_prompt"],
                 )
+                
+                # Stream to UI and capture citations from the special marker
+                citation_metadata: list[CitationMetadata] = []
+                answer_chunks = []
+                
+                for item in stream_gen:
+                    if isinstance(item, dict) and "__citations__" in item:
+                        citation_metadata = item["__citations__"]
+                    else:
+                        answer_chunks.append(item)
+                
+                answer_text = "".join(answer_chunks)
+                
+                # Fallback: extract citations from streamed text if validation failed
+                if not citation_metadata:
+                    citation_metadata = extract_citation_spans_from_text(answer_text, reranked_sorted)
 
-                answer_text = structured_answer.answer
-                trace.llm_total_ms = 0  # Not streaming, so no TTFT tracking for now
+                trace.llm_total_ms = 0
 
-                # Citation Verification - now using structured citations
-                citation_metadata = extract_citation_spans(structured_answer, reranked_sorted)
-
-                # Convert structured citations to legacy format for UI compatibility
+                # Convert citations to legacy format for UI
                 citations = []
                 for c in citation_metadata:
                     citations.append({
@@ -667,7 +685,7 @@ if user_query:
                         "cross_encoder_score": c.cross_encoder_score,
                         "text": c.excerpt_preview,
                         "article_title": c.article_title,
-                        "has_table": False,  # Not tracked in CitationMetadata
+                        "has_table": False,
                     })
 
                 # Display Telemetry Ribbon

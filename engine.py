@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from functools import lru_cache, wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import psutil
 import yaml
@@ -824,6 +824,100 @@ def synthesize_answer(
     return safe_generate(
         model, prompt, rate_limiter or GeminiRateLimiter(14), generation_config
     )
+
+
+def synthesize_with_streaming_and_validation(
+    model: Any,
+    prompt: str,
+    rate_limiter: GeminiRateLimiter | None,
+    generation_config: dict | None,
+    context_passages: list[RerankedPassage],
+    system_prompt: str | None = None,
+) -> Generator[str | dict, None, list[CitationMetadata]]:
+    """Stream tokens for live UX, then validate citations against context.
+    
+    Yields:
+        str: Token chunks for live streaming
+        dict: Special marker with citations at the end
+    
+    Returns:
+        list[CitationMetadata]: Validated citations (accessible via generator return)
+    """
+    # Stream tokens for live display
+    stream_wrapper = TimedStreamWrapper(
+        stream_synthesize_answer(model, prompt, rate_limiter, generation_config)
+    )
+    full_text = ""
+    for chunk in stream_wrapper:
+        full_text += chunk
+        yield chunk  # Live token for st.write_stream
+    
+    # Post-streaming: validate citations against retrieved context
+    # Extract citations from the generated text using regex
+    import re
+    citation_pattern = r"\[Edition:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Page:\s*(\d+)\]"
+    cited_pairs = re.findall(citation_pattern, full_text)
+    
+    # Validate against context passages
+    valid_citations = []
+    for edition_date_str, page_str in cited_pairs:
+        edition_date = date.fromisoformat(edition_date_str)
+        page_num = int(page_str)
+        
+        # Find matching passage
+        passage = next(
+            (p for p in context_passages
+             if str(p.payload.edition_date) == edition_date_str
+             and p.payload.page_number == page_num),
+            None
+        )
+        
+        if passage:
+            valid_citations.append(CitationMetadata(
+                edition_date=edition_date,
+                page_number=page_num,
+                article_title=passage.payload.article_title,
+                cross_encoder_score=passage.cross_encoder_score,
+                excerpt_preview=passage.text[:300],
+            ))
+    
+    # Return the validated citations after streaming completes
+    # Yield as a special marker so the caller can retrieve them
+    yield {"__citations__": valid_citations}
+    return valid_citations
+
+
+def extract_citation_spans_from_text(
+    answer_text: str,
+    context_passages: list[RerankedPassage],
+) -> list[CitationMetadata]:
+    """Extract and validate citations from answer text against context passages."""
+    import re
+    citation_pattern = r"\[Edition:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Page:\s*(\d+)\]"
+    cited_pairs = re.findall(citation_pattern, answer_text)
+    
+    valid_citations = []
+    for edition_date_str, page_str in cited_pairs:
+        edition_date = date.fromisoformat(edition_date_str)
+        page_num = int(page_str)
+        
+        passage = next(
+            (p for p in context_passages
+             if str(p.payload.edition_date) == edition_date_str
+             and p.payload.page_number == page_num),
+            None
+        )
+        
+        if passage:
+            valid_citations.append(CitationMetadata(
+                edition_date=edition_date,
+                page_number=page_num,
+                article_title=passage.payload.article_title,
+                cross_encoder_score=passage.cross_encoder_score,
+                excerpt_preview=passage.text[:300],
+            ))
+    
+    return valid_citations
 
 
 # ─────────────────────────────────────────────────────────────────────────────

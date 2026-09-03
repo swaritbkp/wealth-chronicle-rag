@@ -1,14 +1,15 @@
 """
-drift_monitor.py — Query Embedding Drift Detection using UMAP + HDBSCAN.
+drift_monitor.py — Query Embedding Drift Detection using Pure NumPy.
 
-Detects semantic drift in incoming user queries by clustering embeddings
-and comparing against a baseline. Generates alerts for new/emerging topics.
+Detects semantic drift in incoming user queries using cosine distance
+against baseline cluster centroids with leader clustering.
+No external C++ dependencies (pure NumPy + JSON).
 """
 
 from __future__ import annotations
 
+import json
 import logging
-import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,56 +17,32 @@ from uuid import UUID
 
 import numpy as np
 
-try:
-    import hdbscan
-    import umap
-    UMAP_AVAILABLE = True
-except ImportError:
-    UMAP_AVAILABLE = False
-    hdbscan = None
-    umap = None
-
 from schemas import DriftAlert, DriftCluster, DriftReport, DriftSeverity
 
 logger = logging.getLogger("wealthchronicle.drift")
 
-DEFAULT_DRIFT_DB = "drift_baseline.pkl"
+DEFAULT_DRIFT_DB = "drift_baseline.json"
 DEFAULT_MIN_CLUSTER_SIZE = 5
-DEFAULT_MIN_SAMPLES = 3
-DEFAULT_UMAP_N_NEIGHBORS = 10
-DEFAULT_UMAP_MIN_DIST = 0.1
-DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE = 5
-DEFAULT_HDBSCAN_MIN_SAMPLES = 3
 DRIFT_COSINE_THRESHOLD = 0.35  # Max cosine distance to consider same cluster
 NEW_CLUSTER_MIN_SIZE = 3  # Min queries to flag as new cluster
+LEADER_CLUSTER_THRESHOLD = 0.30  # Max cosine distance for leader clustering
 
 
 class DriftMonitor:
-    """Monitors query embeddings for semantic drift using UMAP + HDBSCAN."""
+    """Monitors query embeddings for semantic drift using pure NumPy leader clustering."""
 
     def __init__(
         self,
         dense_embedding_model: Any,
         baseline_path: str = DEFAULT_DRIFT_DB,
-        min_cluster_size: int = DEFAULT_HDBSCAN_MIN_CLUSTER_SIZE,
-        min_samples: int = DEFAULT_HDBSCAN_MIN_SAMPLES,
-        umap_n_neighbors: int = DEFAULT_UMAP_N_NEIGHBORS,
-        umap_min_dist: float = DEFAULT_UMAP_MIN_DIST,
+        min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
     ):
-        if not UMAP_AVAILABLE:
-            raise RuntimeError("UMAP/HDBSCAN not installed. Install with: pip install umap-learn hdbscan")
-
         self.dense_embedding_model = dense_embedding_model
         self.baseline_path = Path(baseline_path)
         self.min_cluster_size = min_cluster_size
-        self.min_samples = min_samples
-        self.umap_n_neighbors = umap_n_neighbors
-        self.umap_min_dist = umap_min_dist
 
         # State
         self.baseline_clusters: list[DriftCluster] = []
-        self.baseline_umap: umap.UMAP | None = None
-        self.baseline_hdbscan: hdbscan.HDBSCAN | None = None
         self.alerts: list[DriftAlert] = []
 
     def _embed_queries(self, queries: list[str]) -> np.ndarray:
@@ -73,68 +50,93 @@ class DriftMonitor:
         embeddings = list(self.dense_embedding_model.embed(queries))
         return np.array([e.tolist() if hasattr(e, "tolist") else list(e) for e in embeddings])
 
-    def _reduce_dimensions(self, embeddings: np.ndarray, fit: bool = False) -> np.ndarray:
-        """Reduce embeddings to 2D using UMAP."""
-        if fit or self.baseline_umap is None:
-            self.baseline_umap = umap.UMAP(
-                n_neighbors=self.umap_n_neighbors,
-                min_dist=self.umap_min_dist,
-                n_components=2,
-                metric="cosine",
-                random_state=42,
-            )
-            return self.baseline_umap.fit_transform(embeddings)
-        return self.baseline_umap.transform(embeddings)
+    def _normalize_embeddings(self, embeddings: np.ndarray) -> np.ndarray:
+        """Normalize embeddings to unit length for cosine similarity."""
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return embeddings / norms
 
-    def _cluster_embeddings(self, embeddings_2d: np.ndarray, fit: bool = False) -> np.ndarray:
-        """Cluster 2D embeddings using HDBSCAN."""
-        if fit or self.baseline_hdbscan is None:
-            self.baseline_hdbscan = hdbscan.HDBSCAN(
-                min_cluster_size=self.min_cluster_size,
-                min_samples=self.min_samples,
-                metric="euclidean",
-                cluster_selection_method="eom",
-            )
-            return self.baseline_hdbscan.fit_predict(embeddings_2d)
-        return self.baseline_hdbscan.fit_predict(embeddings_2d)
+    def _cosine_distance(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute cosine distance between two unit vectors."""
+        # Vectors should already be normalized
+        return 1.0 - np.clip(np.dot(a, b), -1.0, 1.0)
+
+    def _leader_clustering(self, embeddings: np.ndarray, threshold: float = LEADER_CLUSTER_THRESHOLD) -> tuple[list[np.ndarray], np.ndarray]:
+        """
+        Leader clustering algorithm (O(N*K) online clustering).
+        
+        Returns:
+            centroids: List of cluster centroid vectors
+            labels: Cluster assignment for each point (-1 for noise if below threshold)
+        """
+        if len(embeddings) == 0:
+            return [], np.array([])
+        
+        centroids: list[np.ndarray] = []
+        labels = np.full(len(embeddings), -1, dtype=int)
+        
+        for i, emb in enumerate(embeddings):
+            # Find closest centroid
+            best_dist = float('inf')
+            best_idx = -1
+            
+            for idx, centroid in enumerate(centroids):
+                dist = self._cosine_distance(emb, centroid)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = idx
+            
+            if best_dist <= threshold:
+                # Assign to existing cluster
+                labels[i] = best_idx
+                # Update centroid incrementally (running average)
+                # We'll recompute centroids at the end for accuracy
+            else:
+                # Create new cluster
+                centroids.append(emb.copy())
+                labels[i] = len(centroids) - 1
+        
+        # Recompute centroids from assigned points
+        final_centroids = []
+        final_labels = np.full(len(embeddings), -1, dtype=int)
+        
+        for idx in range(len(centroids)):
+            mask = labels == idx
+            if np.any(mask):
+                cluster_points = embeddings[mask]
+                centroid = cluster_points.mean(axis=0)
+                # Normalize centroid
+                centroid = centroid / (np.linalg.norm(centroid) + 1e-8)
+                final_centroids.append(centroid)
+                final_labels[mask] = len(final_centroids) - 1
+        
+        return final_centroids, final_labels
 
     def _compute_centroid(self, embeddings: np.ndarray, labels: np.ndarray, cluster_id: int) -> np.ndarray:
         """Compute centroid embedding for a cluster."""
         mask = labels == cluster_id
         if not np.any(mask):
             return np.zeros(embeddings.shape[1])
-        return embeddings[mask].mean(axis=0)
+        centroid = embeddings[mask].mean(axis=0)
+        return centroid / (np.linalg.norm(centroid) + 1e-8)
 
     def _cosine_distance(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Compute cosine distance between two vectors."""
-        return 1.0 - np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        """Compute cosine distance between two unit vectors."""
+        return 1.0 - np.clip(np.dot(a, b), -1.0, 1.0)
 
-    def build_baseline(self, queries: list[str]) -> DriftReport:
-        """Build baseline clusters from historical queries."""
-        if len(queries) < self.min_cluster_size:
-            logger.warning(f"Need at least {self.min_cluster_size} queries for baseline, got {len(queries)}")
-            return DriftReport(
-                total_queries_analyzed=len(queries),
-                num_clusters=0,
-                num_noise_queries=len(queries),
-                severity=DriftSeverity.NONE,
-                recommendation="Insufficient queries for baseline. Collect more query history.",
-            )
-
+    def _build_baseline_from_embeddings(self, queries: list[str], embeddings: np.ndarray) -> DriftReport:
+        """Build baseline clusters from embeddings using leader clustering."""
         logger.info(f"Building drift baseline from {len(queries)} queries...")
 
-        # Embed queries
-        embeddings = self._embed_queries(queries)
+        # Normalize embeddings
+        embeddings = self._normalize_embeddings(embeddings)
 
-        # Reduce dimensions
-        embeddings_2d = self._reduce_dimensions(embeddings, fit=True)
-
-        # Cluster
-        labels = self._cluster_embeddings(embeddings_2d, fit=True)
+        # Leader clustering
+        centroids, labels = self._leader_clustering(embeddings)
 
         # Build cluster objects
         self.baseline_clusters = []
-        unique_labels = set(labels) - {-1}  # Exclude noise (-1)
+        unique_labels = set(labels) - {-1}
 
         for cluster_id in sorted(unique_labels):
             mask = labels == cluster_id
@@ -168,11 +170,26 @@ class DriftMonitor:
             new_clusters=[],
             severity=DriftSeverity.NONE,
             recommendation="Baseline established successfully.",
-            baseline_coverage=1.0 - (noise_count / len(queries)),
+            baseline_coverage=1.0 - (noise_count / len(queries)) if len(queries) > 0 else 0.0,
         )
 
         logger.info(f"Baseline built: {len(self.baseline_clusters)} clusters, {noise_count} noise queries")
         return report
+
+    def build_baseline(self, queries: list[str]) -> DriftReport:
+        """Build baseline clusters from historical queries."""
+        if len(queries) < 2:
+            logger.warning(f"Need at least 2 queries for baseline, got {len(queries)}")
+            return DriftReport(
+                total_queries_analyzed=len(queries),
+                num_clusters=0,
+                num_noise_queries=len(queries),
+                severity=DriftSeverity.NONE,
+                recommendation="Insufficient queries for baseline. Collect more query history.",
+            )
+
+        embeddings = self._embed_queries(queries)
+        return self._build_baseline_from_embeddings(queries, embeddings)
 
     def detect_drift(self, new_queries: list[str]) -> DriftReport:
         """Detect drift in new queries against baseline."""
@@ -198,23 +215,21 @@ class DriftMonitor:
 
         # Embed new queries
         new_embeddings = self._embed_queries(new_queries)
+        new_embeddings = self._normalize_embeddings(new_embeddings)
 
-        # Reduce dimensions using fitted UMAP
-        new_embeddings_2d = self._reduce_dimensions(new_embeddings, fit=False)
-
-        # Cluster using fitted HDBSCAN (predict mode)
-        new_labels = self._cluster_embeddings(new_embeddings_2d, fit=False)
+        # Leader clustering on new queries
+        centroids, labels = self._leader_clustering(new_embeddings)
 
         # Analyze clusters
         new_clusters: list[DriftCluster] = []
-        unique_labels = set(new_labels) - {-1}
+        unique_labels = set(labels) - {-1}
 
         for cluster_id in sorted(unique_labels):
-            mask = new_labels == cluster_id
+            mask = labels == cluster_id
             cluster_embeddings = new_embeddings[mask]
             cluster_queries = [new_queries[i] for i in np.where(mask)[0]]
 
-            centroid = self._compute_centroid(new_embeddings, new_labels, cluster_id)
+            centroid = self._compute_centroid(new_embeddings, labels, cluster_id)
 
             # Check if this cluster matches any baseline cluster
             min_dist = float("inf")
@@ -228,25 +243,24 @@ class DriftMonitor:
 
             # Only flag as new cluster if it has enough queries
             if is_new and query_count >= NEW_CLUSTER_MIN_SIZE:
+                distances = [self._cosine_distance(centroid, e) for e in cluster_embeddings]
+
                 cluster = DriftCluster(
                     cluster_id=int(cluster_id),
                     centroid_embedding=centroid.tolist(),
                     query_count=query_count,
                     sample_queries=cluster_queries[:5],
-                    avg_distance_to_centroid=0.0,  # Will compute below
+                    avg_distance_to_centroid=float(np.mean(distances)),
                     first_seen=datetime.now(timezone.utc),
                     last_seen=datetime.now(timezone.utc),
                     is_new=True,
                 )
-                # Compute avg distance to own centroid
-                distances = [self._cosine_distance(centroid, e) for e in cluster_embeddings]
-                cluster.avg_distance_to_centroid = float(np.mean(distances))
                 new_clusters.append(cluster)
 
                 # Generate alert
                 self._generate_alert(cluster, min_dist, cluster_queries[:3])
 
-        noise_count = int(np.sum(new_labels == -1))
+        noise_count = int(np.sum(labels == -1))
 
         # Determine overall severity
         severity = self._compute_severity(new_clusters)
@@ -256,12 +270,12 @@ class DriftMonitor:
 
         report = DriftReport(
             total_queries_analyzed=len(new_queries),
-            num_clusters=len(unique_labels),
+            num_clusters=len(set(labels) - {-1}),
             num_noise_queries=noise_count,
             new_clusters=new_clusters,
             severity=severity,
             recommendation=recommendation,
-            baseline_coverage=1.0 - (noise_count / len(new_queries)),
+            baseline_coverage=1.0 - (noise_count / len(new_queries)) if len(new_queries) > 0 else 0.0,
         )
 
         logger.info(f"Drift analysis: {len(new_clusters)} new clusters, severity={severity.value}")
@@ -350,34 +364,28 @@ class DriftMonitor:
         return False
 
     def save_baseline(self, path: str | None = None) -> None:
-        """Save baseline to disk."""
+        """Save baseline to disk as JSON."""
         save_path = Path(path or self.baseline_path)
         data = {
             "clusters": [c.model_dump() for c in self.baseline_clusters],
-            "umap_params": {
-                "n_neighbors": self.umap_n_neighbors,
-                "min_dist": self.umap_min_dist,
-            },
-            "hdbscan_params": {
-                "min_cluster_size": self.min_cluster_size,
-                "min_samples": self.min_samples,
-            },
+            "leader_threshold": LEADER_CLUSTER_THRESHOLD,
+            "drift_threshold": DRIFT_COSINE_THRESHOLD,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
-        with open(save_path, "wb") as f:
-            pickle.dump(data, f)
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
         logger.info(f"Baseline saved to {save_path}")
 
     def load_baseline(self, path: str | None = None) -> bool:
-        """Load baseline from disk."""
+        """Load baseline from disk (JSON)."""
         load_path = Path(path or self.baseline_path)
         if not load_path.exists():
             logger.warning(f"No baseline found at {load_path}")
             return False
 
         try:
-            with open(load_path, "rb") as f:
-                data = pickle.load(f)
+            with open(load_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
             self.baseline_clusters = [DriftCluster(**c) for c in data.get("clusters", [])]
             logger.info(f"Loaded baseline with {len(self.baseline_clusters)} clusters from {load_path}")
